@@ -47,6 +47,16 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
+/// Detect a file's newline style from its first line ending. A file with no
+/// newline falls back to the platform default, so fresh content is CRLF on
+/// Windows and LF elsewhere.
+fn detect_crlf(s: &str) -> bool {
+    match s.find('\n') {
+        Some(i) => i > 0 && s.as_bytes()[i - 1] == b'\r',
+        None => cfg!(windows),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum EditKind {
     InsertChar,
@@ -78,6 +88,8 @@ pub struct Buffer {
     pub scroll_row: usize,
     pub scroll_col: usize,
     pub modified: bool,
+    /// File uses CRLF line endings (preserved on save).
+    pub crlf: bool,
     pub language: Language,
     /// Per line: starts inside a block comment.
     pub line_states: Vec<bool>,
@@ -97,6 +109,7 @@ impl Buffer {
             scroll_row: 0,
             scroll_col: 0,
             modified: false,
+            crlf: cfg!(windows),
             language: Language::Plain,
             line_states: vec![false],
             undo_stack: Vec::new(),
@@ -107,7 +120,9 @@ impl Buffer {
 
     pub fn from_path(path: &Path) -> io::Result<Buffer> {
         let bytes = fs::read(path)?;
-        let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n").replace('\r', "\n");
+        let raw = String::from_utf8_lossy(&bytes);
+        let crlf = detect_crlf(&raw);
+        let text = raw.replace("\r\n", "\n").replace('\r', "\n");
         let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
         if lines.is_empty() {
             lines.push(String::new());
@@ -119,6 +134,7 @@ impl Buffer {
         b.language = Language::from_path(path);
         b.path = Some(path.to_path_buf());
         b.lines = lines;
+        b.crlf = crlf;
         b.recompute_states();
         Ok(b)
     }
@@ -135,8 +151,9 @@ impl Buffer {
         let path = self.path.clone().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "buffer has no path")
         })?;
-        let mut text = self.lines.join("\n");
-        text.push('\n');
+        let newline = if self.crlf { "\r\n" } else { "\n" };
+        let mut text = self.lines.join(newline);
+        text.push_str(newline);
         fs::write(&path, text)?;
         self.modified = false;
         Ok(())
@@ -1027,5 +1044,39 @@ mod bench {
         // hundreds of µs to milliseconds; incremental must stay tiny.
         assert!(per_insert < 50.0, "insert_char too slow: {per_insert} µs");
         assert!(per_undo < 50.0, "undo too slow: {per_undo} µs");
+    }
+}
+
+#[cfg(test)]
+mod io_tests {
+    use super::*;
+    use std::env;
+
+    fn tmp(name: &str) -> PathBuf {
+        let mut p = env::temp_dir();
+        p.push(format!("plume_test_{}_{name}", std::process::id()));
+        p
+    }
+
+    /// A file's original CRLF/LF style survives a load/save round-trip.
+    #[test]
+    fn preserves_line_endings() {
+        let crlf = tmp("crlf.txt");
+        fs::write(&crlf, b"one\r\ntwo\r\nthree\r\n").unwrap();
+        let mut b = Buffer::from_path(&crlf).unwrap();
+        assert!(b.crlf, "should detect CRLF");
+        assert_eq!(b.lines, vec!["one", "two", "three"]);
+        b.save().unwrap();
+        assert_eq!(fs::read(&crlf).unwrap(), b"one\r\ntwo\r\nthree\r\n");
+
+        let lf = tmp("lf.txt");
+        fs::write(&lf, b"a\nb\n").unwrap();
+        let mut b = Buffer::from_path(&lf).unwrap();
+        assert!(!b.crlf, "should detect LF");
+        b.save().unwrap();
+        assert_eq!(fs::read(&lf).unwrap(), b"a\nb\n");
+
+        let _ = fs::remove_file(&crlf);
+        let _ = fs::remove_file(&lf);
     }
 }
