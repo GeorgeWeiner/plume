@@ -254,11 +254,6 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
 
     let follow = app.follow;
     app.follow = false;
-    let find_info: Option<(Vec<(usize, usize)>, usize, usize)> = app
-        .find
-        .as_ref()
-        .map(|fs| (fs.matches.clone(), fs.idx, fs.input.text.chars().count()));
-
     let overlay_open = app.overlay.is_some();
     let find_typing = app.find_typing;
     let Some(buf) = app.buffers.get_mut(app.active) else {
@@ -291,6 +286,23 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
     let sel = buf.selection();
     let width = text_rect.width as usize;
 
+    // Only the find matches on visible rows matter for rendering; matches are
+    // row-major sorted, so slice them out instead of cloning the whole list.
+    let (vis_matches, cur_match, qlen): (Vec<(usize, usize)>, Option<(usize, usize)>, usize) =
+        match app.find.as_ref() {
+            Some(fs) => {
+                let h = text_rect.height as usize;
+                let s = fs.matches.partition_point(|m| m.0 < scroll_row);
+                let e = fs.matches.partition_point(|m| m.0 < scroll_row + h);
+                (
+                    fs.matches[s..e].to_vec(),
+                    fs.matches.get(fs.idx).copied(),
+                    fs.input.text.chars().count(),
+                )
+            }
+            None => (Vec::new(), None, 0),
+        };
+
     let mut out: Vec<Line> = Vec::new();
     for vy in 0..text_rect.height as usize {
         let row = scroll_row + vy;
@@ -311,7 +323,9 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
             format!("{:>w$} ", row + 1, w = gutter_w as usize - 1),
             nr_style,
         )];
-        spans.extend(line_spans(t, buf, row, row_bg, scroll_col, width, sel, find_info.as_ref()));
+        spans.extend(line_spans(
+            t, buf, row, row_bg, scroll_col, width, sel, &vis_matches, cur_match, qlen,
+        ));
         out.push(Line::from(spans));
     }
     f.render_widget(Paragraph::new(out), inner);
@@ -338,14 +352,25 @@ fn line_spans(
     scroll_col: usize,
     width: usize,
     sel: Option<((usize, usize), (usize, usize))>,
-    find: Option<&(Vec<(usize, usize)>, usize, usize)>,
+    matches: &[(usize, usize)],
+    cur_match: Option<(usize, usize)>,
+    qlen: usize,
 ) -> Vec<Span<'static>> {
     let line = buf.line(row);
-    let chars: Vec<char> = line.chars().collect();
+    // Every char is at least one column wide, so nothing past this index can
+    // be visible — bounds per-line render cost regardless of line length.
+    let take_n = scroll_col + width + 1;
+    let chars: Vec<char> = line.chars().take(take_n).collect();
     let n = chars.len();
 
-    let in_block = buf.line_states.get(row).copied().unwrap_or(false);
-    let (ranges, _) = syntax::scan_line(buf.language, line, in_block);
+    // Skip tokenization on absurdly long lines (minified files): scan_line is
+    // O(full line) and would run for every visible frame.
+    let ranges = if line.len() <= 8192 {
+        let in_block = buf.line_states.get(row).copied().unwrap_or(false);
+        syntax::scan_line(buf.language, line, in_block).0
+    } else {
+        Vec::new()
+    };
 
     let mut fgs = vec![t.fg; n];
     for (s, e, tok) in ranges {
@@ -355,15 +380,13 @@ fn line_spans(
     }
     let mut bgs = vec![row_bg; n];
 
-    if let Some((matches, cur_idx, qlen)) = find {
-        for (mi, &(mr, mc)) in matches.iter().enumerate() {
-            if mr != row {
-                continue;
-            }
-            let bg = if mi == *cur_idx { t.match_current_bg } else { t.match_bg };
-            for slot in bgs.iter_mut().take((mc + qlen).min(n)).skip(mc) {
-                *slot = bg;
-            }
+    for &(mr, mc) in matches {
+        if mr != row {
+            continue;
+        }
+        let bg = if cur_match == Some((mr, mc)) { t.match_current_bg } else { t.match_bg };
+        for slot in bgs.iter_mut().take((mc + qlen).min(n)).skip(mc.min(n)) {
+            *slot = bg;
         }
     }
     if let Some((a, b)) = sel {
@@ -529,7 +552,11 @@ fn draw_panel(f: &mut Frame, app: &mut App, t: &Theme) {
             f.render_widget(Paragraph::new(lines), inner);
         }
         Panel::Search(pane) => {
-            let title = format!(" {}  ·  {} results for '{}' ", pane.title, pane.matches.len(), pane.query);
+            let title = if pane.done {
+                format!(" {}  ·  {} results for '{}' ", pane.title, pane.matches.len(), pane.query)
+            } else {
+                format!(" {}  ·  searching… {} found ", pane.title, pane.matches.len())
+            };
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -602,7 +629,7 @@ fn draw_panel(f: &mut Frame, app: &mut App, t: &Theme) {
             }
             if pane.matches.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "  no matches",
+                    if pane.done { "  no matches" } else { "  searching…" },
                     Style::default().fg(t.dim).bg(t.panel_bg),
                 )));
             }
@@ -859,8 +886,13 @@ fn draw_overlay(f: &mut Frame, app: &App, t: &Theme) {
                 let idx = start + vis;
                 let Some(&item_idx) = p.filtered.get(idx) else {
                     if idx == 0 {
+                        let msg = if p.mode == PaletteMode::Files && app.files_loading() {
+                            "  scanning project…"
+                        } else {
+                            "  no matches"
+                        };
                         lines.push(Line::from(Span::styled(
-                            "  no matches",
+                            msg,
                             Style::default().fg(t.dim).bg(t.popup_bg),
                         )));
                     }

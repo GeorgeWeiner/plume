@@ -2,6 +2,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver};
+use std::thread;
 use std::time::Instant;
 
 use ratatui::layout::Rect;
@@ -9,7 +11,7 @@ use ratatui::layout::Rect;
 use crate::buffer::Buffer;
 use crate::explorer::FileTree;
 use crate::palette::{InputLine, PaletteAction, PaletteItem, PaletteMode, PaletteState};
-use crate::search::{self, SearchMatch};
+use crate::search::{self, SearchMatch, SearchMsg};
 use crate::theme::Theme;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -114,6 +116,8 @@ pub struct SearchPane {
     pub matches: Vec<SearchMatch>,
     pub selected: usize,
     pub scroll: usize,
+    /// False while a worker thread is still streaming results in.
+    pub done: bool,
 }
 
 pub enum Panel {
@@ -158,6 +162,12 @@ pub struct App {
     pub mouse_sel: bool,
     /// When true, the next draw scrolls the editor so the cursor is visible.
     pub follow: bool,
+    /// Streaming results from the current global-search worker, if any.
+    search_rx: Option<Receiver<SearchMsg>>,
+    search_gen: u64,
+    /// Pending file listing for quick open, if a scan is in flight.
+    files_rx: Option<Receiver<(u64, Vec<PathBuf>)>>,
+    files_gen: u64,
 }
 
 impl App {
@@ -184,7 +194,86 @@ impl App {
             tab_hits: Vec::new(),
             mouse_sel: false,
             follow: true,
+            search_rx: None,
+            search_gen: 0,
+            files_rx: None,
+            files_gen: 0,
         }
+    }
+
+    /// True while quick open is waiting for the project file scan.
+    pub fn files_loading(&self) -> bool {
+        self.files_rx.is_some()
+    }
+
+    /// Pull in any results background workers have produced. Returns true if
+    /// something changed and the UI should redraw.
+    pub fn drain_async(&mut self) -> bool {
+        let mut changed = false;
+
+        // global search results
+        let mut finished = false;
+        let mut no_results_query: Option<String> = None;
+        if let Some(rx) = &self.search_rx {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    SearchMsg::Batch(gen, batch) if gen == self.search_gen => {
+                        if let Panel::Search(p) = &mut self.panel {
+                            p.matches.extend(batch);
+                            changed = true;
+                        }
+                    }
+                    SearchMsg::Done(gen) if gen == self.search_gen => {
+                        if let Panel::Search(p) = &mut self.panel {
+                            p.done = true;
+                            if p.matches.is_empty() {
+                                no_results_query = Some(p.query.clone());
+                            }
+                        }
+                        finished = true;
+                        changed = true;
+                    }
+                    _ => {} // stale generation — a newer search superseded it
+                }
+            }
+        }
+        if finished {
+            self.search_rx = None;
+        }
+        if let Some(q) = no_results_query {
+            self.notify(format!("No results for '{q}'"), Level::Warn);
+        }
+
+        // quick-open file listing
+        let mut files: Option<Vec<PathBuf>> = None;
+        if let Some(rx) = &self.files_rx {
+            while let Ok((gen, list)) = rx.try_recv() {
+                if gen == self.files_gen {
+                    files = Some(list);
+                }
+            }
+        }
+        if let Some(list) = files {
+            self.files_rx = None;
+            if let Some(Overlay::Palette(p)) = &mut self.overlay {
+                if p.mode == PaletteMode::Files {
+                    p.items = list
+                        .into_iter()
+                        .map(|path| {
+                            let rel = path.strip_prefix(&self.root).unwrap_or(&path).to_path_buf();
+                            PaletteItem {
+                                label: rel.display().to_string(),
+                                hint: String::new(),
+                                action: PaletteAction::OpenFile(path),
+                            }
+                        })
+                        .collect();
+                    p.refilter();
+                    changed = true;
+                }
+            }
+        }
+        changed
     }
 
     /// Called after any editor keystroke: keep the cursor on screen and keep
@@ -220,8 +309,11 @@ impl App {
         }
     }
 
-    pub fn tick(&mut self) {
+    /// Expire old notifications. Returns true if the UI should redraw.
+    pub fn tick(&mut self) -> bool {
+        let before = self.notices.len();
         self.notices.retain(|n| n.at.elapsed().as_secs_f32() < 4.0);
+        self.notices.len() != before
     }
 
     // ---- files & buffers ----
@@ -359,19 +451,18 @@ impl App {
     }
 
     pub fn open_quick_open(&mut self) {
-        let files = search::list_files(&self.root);
-        let items = files
-            .into_iter()
-            .map(|p| {
-                let rel = p.strip_prefix(&self.root).unwrap_or(&p).to_path_buf();
-                PaletteItem {
-                    label: rel.display().to_string(),
-                    hint: String::new(),
-                    action: PaletteAction::OpenFile(p),
-                }
-            })
-            .collect();
-        self.overlay = Some(Overlay::Palette(PaletteState::new(PaletteMode::Files, items)));
+        // Scan the project on a worker thread; the palette opens instantly
+        // and fills in when the listing arrives (see drain_async).
+        self.files_gen += 1;
+        let gen = self.files_gen;
+        let (tx, rx) = channel();
+        self.files_rx = Some(rx);
+        let root = self.root.clone();
+        thread::spawn(move || {
+            let files = search::list_files(&root);
+            let _ = tx.send((gen, files));
+        });
+        self.overlay = Some(Overlay::Palette(PaletteState::new(PaletteMode::Files, Vec::new())));
     }
 
     pub fn open_theme_picker(&mut self) {
@@ -656,21 +747,26 @@ impl App {
 
     // ---- global search / references ----
 
+    /// Kick off a project search on a worker thread; results stream into the
+    /// panel via drain_async so the UI stays responsive.
     pub fn run_global_search(&mut self, query: &str, title: Option<String>) {
-        let matches = search::search_project(&self.root, query);
-        let count = matches.len();
-        let title = title.unwrap_or_else(|| "SEARCH".to_string());
+        self.search_gen += 1;
+        let gen = self.search_gen;
+        let (tx, rx) = channel();
+        self.search_rx = Some(rx);
+        let root = self.root.clone();
+        let q = query.to_string();
+        thread::spawn(move || search::search_project_streaming(&root, &q, gen, tx));
+
         self.panel = Panel::Search(SearchPane {
-            title,
+            title: title.unwrap_or_else(|| "SEARCH".to_string()),
             query: query.to_string(),
-            matches,
+            matches: Vec::new(),
             selected: 0,
             scroll: 0,
+            done: false,
         });
         self.focus = Focus::Panel;
-        if count == 0 {
-            self.notify(format!("No results for '{query}'"), Level::Warn);
-        }
     }
 
     pub fn find_references(&mut self) {

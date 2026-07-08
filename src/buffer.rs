@@ -1,4 +1,9 @@
 //! Text buffer: lines of text, cursor, selection, undo/redo, edit ops.
+//!
+//! Performance model: every edit records a *delta* (the replaced line range),
+//! never a whole-buffer snapshot, and the block-comment highlight state is
+//! updated incrementally from the edited row until it converges. Both keep
+//! per-keystroke cost O(changed lines), independent of file size.
 
 use std::fs;
 use std::io;
@@ -7,6 +12,8 @@ use std::path::{Path, PathBuf};
 use crate::syntax::{self, Language};
 
 pub const TAB_STOP: usize = 4;
+const MAX_FIND_MATCHES: usize = 10_000;
+const MAX_UNDO_ENTRIES: usize = 1_000;
 
 /// Visual column of char index `col` (tabs expand to the next tab stop).
 pub fn visual_col(line: &str, col: usize) -> usize {
@@ -47,10 +54,17 @@ enum EditKind {
     Other,
 }
 
-#[derive(Clone)]
-struct Snapshot {
-    lines: Vec<String>,
-    cursor: (usize, usize),
+/// One recorded edit: rows [row, row+new_len) currently hold what replaced
+/// `old`. Multiple changes made by a single user action share a `group` and
+/// are undone together.
+struct Change {
+    group: u64,
+    kind: EditKind,
+    row: usize,
+    old: Vec<String>,
+    new_len: usize,
+    cursor_before: (usize, usize),
+    cursor_after: (usize, usize),
 }
 
 pub struct Buffer {
@@ -67,14 +81,14 @@ pub struct Buffer {
     pub language: Language,
     /// Per line: starts inside a block comment.
     pub line_states: Vec<bool>,
-    undo_stack: Vec<Snapshot>,
-    redo_stack: Vec<Snapshot>,
-    last_edit: EditKind,
+    undo_stack: Vec<Change>,
+    redo_stack: Vec<Change>,
+    group_counter: u64,
 }
 
 impl Buffer {
     pub fn untitled() -> Buffer {
-        let mut b = Buffer {
+        Buffer {
             path: None,
             lines: vec![String::new()],
             cursor: (0, 0),
@@ -84,21 +98,17 @@ impl Buffer {
             scroll_col: 0,
             modified: false,
             language: Language::Plain,
-            line_states: Vec::new(),
+            line_states: vec![false],
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            last_edit: EditKind::Other,
-        };
-        b.recompute_states();
-        b
+            group_counter: 0,
+        }
     }
 
     pub fn from_path(path: &Path) -> io::Result<Buffer> {
         let bytes = fs::read(path)?;
         let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n").replace('\r', "\n");
         let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
-        // A trailing newline produces one phantom empty line; keep it as the
-        // final editable line but drop nothing (matches most editors).
         if lines.is_empty() {
             lines.push(String::new());
         }
@@ -140,7 +150,27 @@ impl Buffer {
         self.line(row).chars().count()
     }
 
+    // ---- highlight state (block comments) ----
+
+    fn lang_has_block(&self) -> bool {
+        matches!(
+            self.language,
+            Language::Rust
+                | Language::JavaScript
+                | Language::TypeScript
+                | Language::C
+                | Language::Go
+                | Language::Css
+                | Language::Html
+        )
+    }
+
+    /// Full recompute — used on load and language change only.
     pub fn recompute_states(&mut self) {
+        if !self.lang_has_block() {
+            self.line_states = vec![false; self.lines.len()];
+            return;
+        }
         let mut state = false;
         self.line_states = Vec::with_capacity(self.lines.len());
         for line in &self.lines {
@@ -150,71 +180,159 @@ impl Buffer {
         }
     }
 
+    /// Incremental update after rows [row, row+old_count) were replaced by
+    /// `new_count` rows: rescan forward only until the carried state matches
+    /// the cached one again.
+    fn update_states(&mut self, row: usize, old_count: usize, new_count: usize) {
+        if !self.lang_has_block() {
+            self.line_states.resize(self.lines.len(), false);
+            return;
+        }
+        let start = self.line_states.get(row).copied().unwrap_or(false);
+        let end_old = (row + old_count).min(self.line_states.len());
+        self.line_states
+            .splice(row..end_old, std::iter::repeat(start).take(new_count));
+        if self.line_states.len() != self.lines.len() {
+            // bookkeeping went out of sync somewhere — self-heal
+            self.recompute_states();
+            return;
+        }
+        let mut st = start;
+        let mut i = row;
+        while i < self.lines.len() {
+            if i >= row + new_count && self.line_states[i] == st {
+                break; // converged: everything below is unaffected
+            }
+            self.line_states[i] = st;
+            let (_, next) = syntax::scan_line(self.language, &self.lines[i], st);
+            st = next;
+            i += 1;
+        }
+    }
+
+    // ---- undo plumbing ----
+
+    fn next_group(&mut self) -> u64 {
+        self.group_counter += 1;
+        self.group_counter
+    }
+
+    /// Record a completed change. Call AFTER the mutation, with `old` holding
+    /// the pre-mutation lines of the replaced range and `cursor_before` the
+    /// cursor at the start of this sub-change.
+    fn record(
+        &mut self,
+        group: u64,
+        kind: EditKind,
+        row: usize,
+        old: Vec<String>,
+        new_len: usize,
+        cursor_before: (usize, usize),
+    ) {
+        self.modified = true;
+        self.redo_stack.clear();
+        let old_len = old.len();
+        // coalesce plain typing / backspacing on the same line
+        let coalesce = kind != EditKind::Other
+            && old_len == 1
+            && new_len == 1
+            && matches!(
+                self.undo_stack.last(),
+                Some(l) if l.kind == kind && l.row == row && l.new_len == 1
+                    && l.cursor_after == cursor_before
+            );
+        if coalesce {
+            let last = self.undo_stack.last_mut().unwrap();
+            last.cursor_after = self.cursor;
+        } else {
+            self.undo_stack.push(Change {
+                group,
+                kind,
+                row,
+                old,
+                new_len,
+                cursor_before,
+                cursor_after: self.cursor,
+            });
+            if self.undo_stack.len() > MAX_UNDO_ENTRIES {
+                let g0 = self.undo_stack[0].group;
+                let n = self.undo_stack.iter().take_while(|c| c.group == g0).count();
+                self.undo_stack.drain(..n);
+            }
+        }
+        self.update_states(row, old_len, new_len);
+    }
+
+    /// Apply the inverse of a change and return the change that undoes it.
+    fn apply_change(&mut self, ch: &Change) -> Change {
+        let current: Vec<String> = self.lines[ch.row..ch.row + ch.new_len].to_vec();
+        self.lines
+            .splice(ch.row..ch.row + ch.new_len, ch.old.iter().cloned());
+        self.modified = true;
+        self.update_states(ch.row, ch.new_len, ch.old.len());
+        Change {
+            group: ch.group,
+            kind: EditKind::Other,
+            row: ch.row,
+            old: current,
+            new_len: ch.old.len(),
+            cursor_before: ch.cursor_after,
+            cursor_after: ch.cursor_before,
+        }
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(last) = self.undo_stack.last() else {
+            return false;
+        };
+        let group = last.group;
+        let mut applied = false;
+        while let Some(top) = self.undo_stack.last() {
+            if top.group != group {
+                break;
+            }
+            let ch = self.undo_stack.pop().unwrap();
+            let inv = self.apply_change(&ch);
+            self.redo_stack.push(inv);
+            self.cursor = ch.cursor_before;
+            applied = true;
+        }
+        if applied {
+            self.anchor = None;
+            self.clamp_cursor();
+            self.pref_col = visual_col(self.line(self.cursor.0), self.cursor.1);
+        }
+        applied
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(last) = self.redo_stack.last() else {
+            return false;
+        };
+        let group = last.group;
+        let mut applied = false;
+        while let Some(top) = self.redo_stack.last() {
+            if top.group != group {
+                break;
+            }
+            let ch = self.redo_stack.pop().unwrap();
+            let inv = self.apply_change(&ch);
+            self.undo_stack.push(inv);
+            self.cursor = ch.cursor_before;
+            applied = true;
+        }
+        if applied {
+            self.anchor = None;
+            self.clamp_cursor();
+            self.pref_col = visual_col(self.line(self.cursor.0), self.cursor.1);
+        }
+        applied
+    }
+
     fn clamp_cursor(&mut self) {
         let row = self.cursor.0.min(self.lines.len().saturating_sub(1));
         let col = self.cursor.1.min(self.line_len(row));
         self.cursor = (row, col);
-    }
-
-    // ---- undo ----
-
-    fn snapshot(&self) -> Snapshot {
-        Snapshot { lines: self.lines.clone(), cursor: self.cursor }
-    }
-
-    fn edit_begin(&mut self, kind: EditKind) {
-        let coalesce = kind != EditKind::Other
-            && kind == self.last_edit
-            && self.anchor.is_none()
-            && !self.undo_stack.is_empty();
-        if !coalesce {
-            self.undo_stack.push(self.snapshot());
-            if self.undo_stack.len() > 200 {
-                self.undo_stack.remove(0);
-            }
-        }
-        self.redo_stack.clear();
-        self.last_edit = kind;
-    }
-
-    fn edit_end(&mut self) {
-        self.modified = true;
-        self.recompute_states();
-        self.clamp_cursor();
-    }
-
-    pub fn undo(&mut self) -> bool {
-        match self.undo_stack.pop() {
-            Some(s) => {
-                self.redo_stack.push(self.snapshot());
-                self.lines = s.lines;
-                self.cursor = s.cursor;
-                self.anchor = None;
-                self.last_edit = EditKind::Other;
-                self.modified = true;
-                self.recompute_states();
-                self.clamp_cursor();
-                true
-            }
-            None => false,
-        }
-    }
-
-    pub fn redo(&mut self) -> bool {
-        match self.redo_stack.pop() {
-            Some(s) => {
-                self.undo_stack.push(self.snapshot());
-                self.lines = s.lines;
-                self.cursor = s.cursor;
-                self.anchor = None;
-                self.last_edit = EditKind::Other;
-                self.modified = true;
-                self.recompute_states();
-                self.clamp_cursor();
-                true
-            }
-            None => false,
-        }
     }
 
     // ---- selection ----
@@ -248,11 +366,15 @@ impl Buffer {
         Some(out)
     }
 
-    fn remove_selection(&mut self) {
+    /// Remove the selection as part of undo group `g`. Returns true if there
+    /// was a selection.
+    fn delete_selection_grouped(&mut self, g: u64) -> bool {
         let Some((a, b)) = self.selection() else {
             self.anchor = None;
-            return;
+            return false;
         };
+        let cb = self.cursor;
+        let old = self.lines[a.0..=b.0].to_vec();
         if a.0 == b.0 {
             let l = &self.lines[a.0];
             let (s, e) = (bidx(l, a.1), bidx(l, b.1));
@@ -271,14 +393,14 @@ impl Buffer {
         }
         self.cursor = a;
         self.anchor = None;
+        self.pref_col = visual_col(self.line(a.0), a.1);
+        self.record(g, EditKind::Other, a.0, old, 1, cb);
+        true
     }
 
     pub fn delete_selection(&mut self) {
-        if self.selection().is_some() {
-            self.edit_begin(EditKind::Other);
-            self.remove_selection();
-            self.edit_end();
-        }
+        let g = self.next_group();
+        self.delete_selection_grouped(g);
     }
 
     pub fn select_all(&mut self) {
@@ -297,23 +419,28 @@ impl Buffer {
     // ---- editing ----
 
     pub fn insert_char(&mut self, c: char) {
-        self.edit_begin(EditKind::InsertChar);
-        self.remove_selection();
+        let g = self.next_group();
+        let had_sel = self.delete_selection_grouped(g);
+        let cb = self.cursor;
         let (r, col) = self.cursor;
+        let old = vec![self.lines[r].clone()];
         let b = bidx(&self.lines[r], col);
         self.lines[r].insert(b, c);
-        self.cursor.1 += 1;
+        self.cursor = (r, col + 1);
         self.pref_col = visual_col(self.line(r), self.cursor.1);
-        self.edit_end();
+        let kind = if had_sel { EditKind::Other } else { EditKind::InsertChar };
+        self.record(g, kind, r, old, 1, cb);
     }
 
     pub fn insert_str(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
-        self.edit_begin(EditKind::Other);
-        self.remove_selection();
+        let g = self.next_group();
+        self.delete_selection_grouped(g);
+        let cb = self.cursor;
         let (r, col) = self.cursor;
+        let old = vec![self.lines[r].clone()];
         let tail = {
             let l = &self.lines[r];
             l[bidx(l, col)..].to_string()
@@ -338,13 +465,15 @@ impl Buffer {
             self.cursor = (insert_at, last.chars().count());
         }
         self.pref_col = visual_col(self.line(self.cursor.0), self.cursor.1);
-        self.edit_end();
+        self.record(g, EditKind::Other, r, old, parts.len(), cb);
     }
 
     pub fn newline(&mut self) {
-        self.edit_begin(EditKind::Other);
-        self.remove_selection();
+        let g = self.next_group();
+        self.delete_selection_grouped(g);
+        let cb = self.cursor;
         let (r, col) = self.cursor;
+        let old = vec![self.lines[r].clone()];
         let b = bidx(&self.lines[r], col);
         let tail = self.lines[r][b..].to_string();
         self.lines[r].truncate(b);
@@ -357,7 +486,7 @@ impl Buffer {
         self.lines.insert(r + 1, indent + &tail);
         self.cursor = (r + 1, indent_len);
         self.pref_col = visual_col(self.line(r + 1), indent_len);
-        self.edit_end();
+        self.record(g, EditKind::Other, r, old, 2, cb);
     }
 
     pub fn backspace(&mut self) {
@@ -369,19 +498,24 @@ impl Buffer {
         if r == 0 && col == 0 {
             return;
         }
-        self.edit_begin(EditKind::Backspace);
+        let g = self.next_group();
+        let cb = self.cursor;
         if col > 0 {
+            let old = vec![self.lines[r].clone()];
             let b = bidx(&self.lines[r], col - 1);
             self.lines[r].remove(b);
-            self.cursor.1 -= 1;
+            self.cursor = (r, col - 1);
+            self.pref_col = visual_col(self.line(r), self.cursor.1);
+            self.record(g, EditKind::Backspace, r, old, 1, cb);
         } else {
+            let old = self.lines[r - 1..=r].to_vec();
             let cur = self.lines.remove(r);
             let prev_len = self.line_len(r - 1);
             self.lines[r - 1].push_str(&cur);
             self.cursor = (r - 1, prev_len);
+            self.pref_col = visual_col(self.line(r - 1), prev_len);
+            self.record(g, EditKind::Other, r - 1, old, 1, cb);
         }
-        self.pref_col = visual_col(self.line(self.cursor.0), self.cursor.1);
-        self.edit_end();
     }
 
     pub fn delete_forward(&mut self) {
@@ -391,52 +525,64 @@ impl Buffer {
         }
         let (r, col) = self.cursor;
         if col < self.line_len(r) {
-            self.edit_begin(EditKind::Other);
+            let g = self.next_group();
+            let cb = self.cursor;
+            let old = vec![self.lines[r].clone()];
             let b = bidx(&self.lines[r], col);
             self.lines[r].remove(b);
-            self.edit_end();
+            self.record(g, EditKind::Other, r, old, 1, cb);
         } else if r + 1 < self.lines.len() {
-            self.edit_begin(EditKind::Other);
+            let g = self.next_group();
+            let cb = self.cursor;
+            let old = self.lines[r..=r + 1].to_vec();
             let next = self.lines.remove(r + 1);
             self.lines[r].push_str(&next);
-            self.edit_end();
+            self.record(g, EditKind::Other, r, old, 1, cb);
         }
     }
 
     pub fn duplicate_line(&mut self) {
-        self.edit_begin(EditKind::Other);
+        let g = self.next_group();
+        let cb = self.cursor;
         let r = self.cursor.0;
+        let old = vec![self.lines[r].clone()];
         let copy = self.lines[r].clone();
         self.lines.insert(r + 1, copy);
         self.cursor.0 = r + 1;
         self.anchor = None;
-        self.edit_end();
+        self.record(g, EditKind::Other, r, old, 2, cb);
     }
 
     pub fn move_line(&mut self, down: bool) {
         let r = self.cursor.0;
         if down && r + 1 < self.lines.len() {
-            self.edit_begin(EditKind::Other);
+            let g = self.next_group();
+            let cb = self.cursor;
+            let old = self.lines[r..=r + 1].to_vec();
             self.lines.swap(r, r + 1);
             self.cursor.0 = r + 1;
             self.anchor = None;
-            self.edit_end();
+            self.record(g, EditKind::Other, r, old, 2, cb);
         } else if !down && r > 0 {
-            self.edit_begin(EditKind::Other);
+            let g = self.next_group();
+            let cb = self.cursor;
+            let old = self.lines[r - 1..=r].to_vec();
             self.lines.swap(r, r - 1);
             self.cursor.0 = r - 1;
             self.anchor = None;
-            self.edit_end();
+            self.record(g, EditKind::Other, r - 1, old, 2, cb);
         }
     }
 
     /// Indent (or dedent) the selected lines / current line.
     pub fn indent(&mut self, dedent: bool) {
-        self.edit_begin(EditKind::Other);
         let (start, end) = match self.selection() {
             Some((a, b)) => (a.0, b.0),
             None => (self.cursor.0, self.cursor.0),
         };
+        let g = self.next_group();
+        let cb = self.cursor;
+        let old = self.lines[start..=end].to_vec();
         for r in start..=end {
             if dedent {
                 let strip = self.lines[r]
@@ -469,15 +615,17 @@ impl Buffer {
                 }
             }
         }
-        self.edit_end();
+        self.record(g, EditKind::Other, start, old, end - start + 1, cb);
     }
 
     pub fn toggle_comment(&mut self, prefix: &str) {
-        self.edit_begin(EditKind::Other);
         let (start, end) = match self.selection() {
             Some((a, b)) => (a.0, b.0),
             None => (self.cursor.0, self.cursor.0),
         };
+        let g = self.next_group();
+        let cb = self.cursor;
+        let old = self.lines[start..=end].to_vec();
         let all_commented = (start..=end)
             .filter(|r| !self.lines[*r].trim().is_empty())
             .all(|r| self.lines[r].trim_start().starts_with(prefix));
@@ -498,11 +646,14 @@ impl Buffer {
             }
         }
         self.anchor = None;
-        self.edit_end();
+        self.record(g, EditKind::Other, start, old, end - start + 1, cb);
+        self.clamp_cursor();
     }
 
     pub fn trim_trailing_whitespace(&mut self) -> usize {
-        self.edit_begin(EditKind::Other);
+        let g = self.next_group();
+        let cb = self.cursor;
+        let old = self.lines.clone();
         let mut count = 0;
         for line in self.lines.iter_mut() {
             let trimmed = line.trim_end();
@@ -512,7 +663,12 @@ impl Buffer {
                 *line = t;
             }
         }
-        self.edit_end();
+        if count == 0 {
+            return 0; // nothing changed; don't pollute the undo stack
+        }
+        let n = self.lines.len();
+        self.record(g, EditKind::Other, 0, old, n, cb);
+        self.clamp_cursor();
         count
     }
 
@@ -684,8 +840,8 @@ impl Buffer {
 
     // ---- search / words ----
 
-    /// All matches of `query` as (row, char col). ASCII case-insensitive
-    /// unless the query contains an uppercase letter (smart case).
+    /// All matches of `query` as (row, char col), sorted row-major and capped.
+    /// ASCII case-insensitive unless the query contains uppercase (smart case).
     pub fn find_matches(&self, query: &str) -> Vec<(usize, usize)> {
         if query.is_empty() {
             return Vec::new();
@@ -693,8 +849,10 @@ impl Buffer {
         let sensitive = query.chars().any(|c| c.is_uppercase());
         let q: Vec<char> = query.chars().collect();
         let mut out = Vec::new();
+        let mut chars: Vec<char> = Vec::new(); // reused across lines
         for (r, line) in self.lines.iter().enumerate() {
-            let chars: Vec<char> = line.chars().collect();
+            chars.clear();
+            chars.extend(line.chars());
             if chars.len() < q.len() {
                 continue;
             }
@@ -709,6 +867,9 @@ impl Buffer {
                 });
                 if hit {
                     out.push((r, start));
+                    if out.len() >= MAX_FIND_MATCHES {
+                        return out;
+                    }
                 }
             }
         }
@@ -741,14 +902,19 @@ impl Buffer {
     }
 
     /// Naive whole-word rename across this buffer. Returns replacement count.
-    pub fn rename_word(&mut self, old: &str, new: &str) -> usize {
-        if old.is_empty() {
+    pub fn rename_word(&mut self, old_word: &str, new_word: &str) -> usize {
+        if old_word.is_empty() {
             return 0;
         }
-        self.edit_begin(EditKind::Other);
-        let oldc: Vec<char> = old.chars().collect();
+        let g = self.next_group();
+        let cb = self.cursor;
+        let old = self.lines.clone();
+        let oldc: Vec<char> = old_word.chars().collect();
         let mut count = 0;
         for line in self.lines.iter_mut() {
+            if !line.contains(old_word) && old_word.is_ascii() {
+                continue; // fast reject for the common case
+            }
             let chars: Vec<char> = line.chars().collect();
             let mut result = String::new();
             let mut i = 0;
@@ -757,7 +923,7 @@ impl Buffer {
                 let boundary_ok = (i == 0 || !is_word(chars[i - 1]))
                     && (end >= chars.len() || !is_word(chars[end]));
                 if end <= chars.len() && chars[i..end] == oldc[..] && boundary_ok {
-                    result.push_str(new);
+                    result.push_str(new_word);
                     count += 1;
                     i = end;
                 } else {
@@ -767,8 +933,74 @@ impl Buffer {
             }
             *line = result;
         }
+        if count == 0 {
+            return 0;
+        }
         self.anchor = None;
-        self.edit_end();
+        let n = self.lines.len();
+        self.record(g, EditKind::Other, 0, old, n, cb);
+        self.clamp_cursor();
         count
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::Instant;
+
+    /// Build a syntactically Rust-ish buffer of `n` lines.
+    fn big_buffer(n: usize) -> Buffer {
+        let mut b = Buffer::untitled();
+        b.language = Language::Rust;
+        b.lines = (0..n)
+            .map(|i| match i % 5 {
+                0 => format!("fn handler_{i}(x: u64) -> u64 {{"),
+                1 => format!("    // step {i}: accumulate the widget value"),
+                2 => format!("    let value_{i} = x.wrapping_mul({i}) + 0x{i:x};"),
+                3 => format!("    value_{i} /* running total */"),
+                _ => "}".to_string(),
+            })
+            .collect();
+        b.recompute_states();
+        b
+    }
+
+    // Run with: cargo test --release bench_edit_cost -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn bench_edit_cost() {
+        let n = 120_000;
+        let mut b = big_buffer(n);
+        b.goto(n - 1, 0); // worst case: edits at end of file
+
+        let iters = 2000;
+        let t0 = Instant::now();
+        for _ in 0..iters {
+            b.insert_char('x');
+        }
+        let per_insert = t0.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        let t1 = Instant::now();
+        for _ in 0..iters {
+            b.undo();
+        }
+        let per_undo = t1.elapsed().as_secs_f64() * 1e6 / iters as f64;
+
+        // find that saturates the 10k cap
+        let t2 = Instant::now();
+        let m = b.find_matches("value_");
+        let find_ms = t2.elapsed().as_secs_f64() * 1e3;
+
+        println!("\n=== plume buffer micro-bench ({n} lines, edits at EOF) ===");
+        println!("insert_char (delta undo + incremental highlight): {per_insert:8.2} µs/edit");
+        println!("undo:                                             {per_undo:8.2} µs/edit");
+        println!("find_matches('value_') -> {} hits:               {find_ms:8.2} ms", m.len());
+        println!("(a whole-buffer snapshot per edit would clone ~4 MB each time)\n");
+
+        // Regression guard: an O(file) edit on 120k lines would be
+        // hundreds of µs to milliseconds; incremental must stay tiny.
+        assert!(per_insert < 50.0, "insert_char too slow: {per_insert} µs");
+        assert!(per_undo < 50.0, "undo too slow: {per_undo} µs");
     }
 }

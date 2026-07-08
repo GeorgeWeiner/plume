@@ -12,10 +12,16 @@ fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
-pub fn handle_key(app: &mut App, key: KeyEvent) {
+/// Returns true if the event may have changed state (redraw needed).
+pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if key.kind == KeyEventKind::Release {
-        return;
+        return false;
     }
+    handle_key_inner(app, key);
+    true
+}
+
+fn handle_key_inner(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -394,7 +400,23 @@ fn handle_editor(app: &mut App, key: KeyEvent, ctrl: bool, alt: bool, shift: boo
 
 // ---- mouse ----
 
-pub fn handle_mouse(app: &mut App, m: MouseEvent) {
+/// Returns true if the event may have changed state (redraw needed).
+/// Plain mouse motion (no button) is ignored — terminals flood those.
+pub fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
+    match m.kind {
+        MouseEventKind::Down(_)
+        | MouseEventKind::Drag(_)
+        | MouseEventKind::Up(_)
+        | MouseEventKind::ScrollUp
+        | MouseEventKind::ScrollDown => {
+            handle_mouse_inner(app, m);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn handle_mouse_inner(app: &mut App, m: MouseEvent) {
     let (x, y) = (m.column, m.row);
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
@@ -485,5 +507,48 @@ fn scroll_at(app: &mut App, x: u16, y: u16, delta: isize) {
         let max = buf.lines.len().saturating_sub(1);
         let cur = buf.scroll_row as isize + delta;
         buf.scroll_row = cur.clamp(0, max as isize) as usize;
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+    use crate::app::App;
+    use ratatui::crossterm::event::KeyModifiers;
+    use ratatui::layout::Rect;
+    use std::path::PathBuf;
+
+    fn ev(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+        MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE }
+    }
+
+    #[test]
+    fn drag_selects_expected_text_and_coalesces() {
+        let mut app = App::new(PathBuf::from("."));
+        app.open_untitled();
+        {
+            let b = app.buf_mut().unwrap();
+            b.lines = vec!["hello world foo".to_string()];
+            b.recompute_states();
+        }
+        // editor text area starts at (5,2)
+        app.layout.text = Rect { x: 5, y: 2, width: 40, height: 10 };
+
+        // press at col 0 of the line
+        assert!(handle_mouse(&mut app, ev(MouseEventKind::Down(MouseButton::Left), 5, 2)));
+        // 200 drag events ending at visual col 11 ("hello world" = 11 chars)
+        for i in 1..=200u16 {
+            let x = 5 + (i % 12); // wander, final lands at col 11
+            handle_mouse(&mut app, ev(MouseEventKind::Drag(MouseButton::Left), x, 2));
+        }
+        // final deterministic drag to exactly col 11
+        handle_mouse(&mut app, ev(MouseEventKind::Drag(MouseButton::Left), 16, 2));
+        handle_mouse(&mut app, ev(MouseEventKind::Up(MouseButton::Left), 16, 2));
+
+        let sel = app.buf().unwrap().selected_text();
+        assert_eq!(sel.as_deref(), Some("hello world"), "drag selection text");
+
+        // bare Moved events must be ignored (no redraw requested)
+        assert!(!handle_mouse(&mut app, ev(MouseEventKind::Moved, 20, 2)));
     }
 }
