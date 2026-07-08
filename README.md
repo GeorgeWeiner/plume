@@ -101,6 +101,9 @@ line, preserving your `[keybindings]`.
 
 - **Midnight Ocean** — deep blue (default)
 - **Graphite** — neutral OneDark gray
+- **Gruvbox** — warm retro dark
+- **Catppuccin Mocha** — soft pastel dark
+- **Rosé Pine Dawn** — muted rose/gold light
 - **Solar Dawn** — clean light theme
 - **Synthwave** — neon retrowave
 

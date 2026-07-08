@@ -66,7 +66,15 @@ impl Theme {
     }
 
     pub fn all() -> Vec<Theme> {
-        vec![midnight_ocean(), graphite(), solar_dawn(), synthwave()]
+        vec![
+            midnight_ocean(),
+            graphite(),
+            gruvbox(),
+            catppuccin_mocha(),
+            rose_pine_dawn(),
+            solar_dawn(),
+            synthwave(),
+        ]
     }
 }
 
@@ -219,5 +227,119 @@ fn synthwave() -> Theme {
         s_constant: hex(0xfe4450),
         s_punct: hex(0xb6b1d8),
         s_attr: hex(0xfede5d),
+    }
+}
+
+/// Warm retro dark theme (Gruvbox).
+fn gruvbox() -> Theme {
+    Theme {
+        name: "Gruvbox",
+        bg: hex(0x282828),
+        fg: hex(0xebdbb2),
+        panel_bg: hex(0x1d2021),
+        popup_bg: hex(0x32302f),
+        accent: hex(0xfabd2f),
+        accent_fg: hex(0x282828),
+        border: hex(0x3c3836),
+        border_active: hex(0xfabd2f),
+        selection: hex(0x504945),
+        cursor_line: hex(0x32302f),
+        line_nr: hex(0x7c6f64),
+        line_nr_active: hex(0xfabd2f),
+        dim: hex(0x928374),
+        status_bg: hex(0x1d2021),
+        match_bg: hex(0x4f4a2a),
+        match_current_bg: hex(0x7a5f1c),
+        green: hex(0xb8bb26),
+        yellow: hex(0xfabd2f),
+        red: hex(0xfb4934),
+        magenta: hex(0xd3869b),
+        cyan: hex(0x8ec07c),
+        orange: hex(0xfe8019),
+        s_keyword: hex(0xfb4934),
+        s_type: hex(0xfabd2f),
+        s_fn: hex(0xb8bb26),
+        s_string: hex(0xb8bb26),
+        s_comment: hex(0x928374),
+        s_number: hex(0xd3869b),
+        s_constant: hex(0xd3869b),
+        s_punct: hex(0xa89984),
+        s_attr: hex(0x8ec07c),
+    }
+}
+
+/// Soft pastel dark theme (Catppuccin Mocha).
+fn catppuccin_mocha() -> Theme {
+    Theme {
+        name: "Catppuccin Mocha",
+        bg: hex(0x1e1e2e),
+        fg: hex(0xcdd6f4),
+        panel_bg: hex(0x181825),
+        popup_bg: hex(0x313244),
+        accent: hex(0xcba6f7),
+        accent_fg: hex(0x1e1e2e),
+        border: hex(0x313244),
+        border_active: hex(0xcba6f7),
+        selection: hex(0x45475a),
+        cursor_line: hex(0x272736),
+        line_nr: hex(0x585b70),
+        line_nr_active: hex(0xcba6f7),
+        dim: hex(0x6c7086),
+        status_bg: hex(0x181825),
+        match_bg: hex(0x4a4a2f),
+        match_current_bg: hex(0x6f5a26),
+        green: hex(0xa6e3a1),
+        yellow: hex(0xf9e2af),
+        red: hex(0xf38ba8),
+        magenta: hex(0xcba6f7),
+        cyan: hex(0x94e2d5),
+        orange: hex(0xfab387),
+        s_keyword: hex(0xcba6f7),
+        s_type: hex(0xf9e2af),
+        s_fn: hex(0x89b4fa),
+        s_string: hex(0xa6e3a1),
+        s_comment: hex(0x6c7086),
+        s_number: hex(0xfab387),
+        s_constant: hex(0xf38ba8),
+        s_punct: hex(0x9399b2),
+        s_attr: hex(0x94e2d5),
+    }
+}
+
+/// Muted rose/gold light theme (Rosé Pine Dawn).
+fn rose_pine_dawn() -> Theme {
+    Theme {
+        name: "Rosé Pine Dawn",
+        bg: hex(0xfaf4ed),
+        fg: hex(0x575279),
+        panel_bg: hex(0xf2e9e1),
+        popup_bg: hex(0xfffaf3),
+        accent: hex(0x907aa9),
+        accent_fg: hex(0xfaf4ed),
+        border: hex(0xdfdad9),
+        border_active: hex(0x907aa9),
+        selection: hex(0xdfdad9),
+        cursor_line: hex(0xf4ede8),
+        line_nr: hex(0xcecacd),
+        line_nr_active: hex(0x907aa9),
+        dim: hex(0x9893a5),
+        status_bg: hex(0xf2e9e1),
+        match_bg: hex(0xf5e6b8),
+        match_current_bg: hex(0xf0d68c),
+        green: hex(0x56949f),
+        yellow: hex(0xea9d34),
+        red: hex(0xb4637a),
+        magenta: hex(0x907aa9),
+        cyan: hex(0x56949f),
+        orange: hex(0xd7827e),
+        s_keyword: hex(0x286983),
+        s_type: hex(0x56949f),
+        s_fn: hex(0xd7827e),
+        s_string: hex(0xea9d34),
+        s_comment: hex(0x9893a5),
+        s_number: hex(0xb4637a),
+        s_constant: hex(0xb4637a),
+        s_punct: hex(0x797593),
+        s_attr: hex(0xea9d34),
     }
 }

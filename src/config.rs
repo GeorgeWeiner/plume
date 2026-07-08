@@ -156,7 +156,8 @@ pub fn write_template(seed: Option<(&str, &str)>) {
          keymap = \"{keymap_val}\"\n\
          \n\
          # Default color theme by name (Ctrl+K Ctrl+T lists them):\n\
-         #   Midnight Ocean | Graphite | Solar Dawn | Synthwave\n\
+         #   Midnight Ocean | Graphite | Gruvbox | Catppuccin Mocha\n\
+         #   Rosé Pine Dawn | Solar Dawn | Synthwave\n\
          theme = \"{theme_val}\"\n\
          \n\
          # Override individual keybindings. Format:  action = \"chord\"\n\
