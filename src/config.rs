@@ -155,9 +155,9 @@ pub fn write_template(seed: Option<(&str, &str)>) {
          # Base keymap preset: vscode | visual-studio | jetbrains | sublime\n\
          keymap = \"{keymap_val}\"\n\
          \n\
-         # Default color theme by name (Ctrl+K Ctrl+T lists them):\n\
-         #   Midnight Ocean | Graphite | Gruvbox | Catppuccin Mocha\n\
-         #   Rosé Pine Dawn | Solar Dawn | Synthwave\n\
+         # Default color theme by name. Browse all of them (57 built in — Nord,\n\
+         # Dracula, Gruvbox, Tokyo Night, Catppuccin, Solarized, …) with the\n\
+         # in-app picker: Ctrl+K Ctrl+T.\n\
          theme = \"{theme_val}\"\n\
          \n\
          # Override individual keybindings. Format:  action = \"chord\"\n\

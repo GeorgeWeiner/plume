@@ -97,15 +97,19 @@ line, preserving your `[keybindings]`.
 
 ## Themes
 
-`Ctrl+K Ctrl+T` — selection previews live, `Esc` reverts:
+**57 built-in themes** — `Ctrl+K Ctrl+T` opens the picker (fuzzy-filter by name;
+selection previews live, `Esc` reverts). Or set a default in the config:
+`theme = "Nord"`.
 
-- **Midnight Ocean** — deep blue (default)
-- **Graphite** — neutral OneDark gray
-- **Gruvbox** — warm retro dark
-- **Catppuccin Mocha** — soft pastel dark
-- **Rosé Pine Dawn** — muted rose/gold light
-- **Solar Dawn** — clean light theme
-- **Synthwave** — neon retrowave
+Highlights include **Nord**, **Dracula**, **Gruvbox** (dark & light),
+**Tokyo Night** (Night / Storm / Day), the **Catppuccin** family (Latte /
+Frappé / Macchiato / Mocha), **Rosé Pine** (Main / Moon / Dawn), **Solarized**
+(dark & light), **Everforest**, **Kanagawa** (Wave / Dragon / Lotus),
+**Everforest**, **Ayu**, **Monokai**, **Night Owl**, **GitHub** (dark & light),
+**Nightfly**, **Oxocarbon**, **Melange**, **Flexoki**, and the originals
+**Midnight Ocean**, **Graphite**, and **Synthwave** — a mix of dark and light.
+Every theme colors the full UI (chrome, accents, and all syntax roles), so
+switching genuinely re-skins the editor.
 
 ## Architecture
 
