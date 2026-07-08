@@ -16,40 +16,6 @@ pub struct Config {
     pub overrides: Vec<(CommandId, Vec<Chord>)>,
 }
 
-pub fn config_dir() -> Option<PathBuf> {
-    // An explicit XDG override wins on any platform.
-    if let Ok(x) = env::var("XDG_CONFIG_HOME") {
-        if !x.is_empty() {
-            return Some(PathBuf::from(x).join("plume"));
-        }
-    }
-    platform_config_dir()
-}
-
-// Windows keeps per-user config under %APPDATA% (roaming), falling back to the
-// profile root if it is somehow unset.
-#[cfg(windows)]
-fn platform_config_dir() -> Option<PathBuf> {
-    if let Ok(appdata) = env::var("APPDATA") {
-        if !appdata.is_empty() {
-            return Some(PathBuf::from(appdata).join("plume"));
-        }
-    }
-    let profile = env::var("USERPROFILE").ok()?;
-    Some(PathBuf::from(profile).join(".config").join("plume"))
-}
-
-// Unix follows the XDG base-directory default of $HOME/.config.
-#[cfg(not(windows))]
-fn platform_config_dir() -> Option<PathBuf> {
-    let home = env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config").join("plume"))
-}
-
-pub fn config_file() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("config.toml"))
-}
-
 fn strip_comment(line: &str) -> &str {
     // A '#' outside of a quoted string starts a comment. Our values never
     // legitimately contain '#', so a first-hit split is enough, except we
