@@ -23,6 +23,25 @@ cargo build --release
 ./target/release/plume
 ```
 
+### Windows
+
+For a proper Windows setup — `plume` on your PATH, a Start-menu and desktop
+shortcut, and **Open in plume** / **Edit with plume** in the Explorer
+right-click menu — run the bundled installer from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\install.ps1
+```
+
+It builds the release binary, installs it to `%LOCALAPPDATA%\Programs\plume`,
+wires up PATH, shortcuts, and context menus, and prefers Windows Terminal
+(falling back to the classic console) when launching. Everything is per-user, so
+there is no admin prompt. Opt out of any piece with `-NoContextMenu`,
+`-NoShortcuts`, `-NoPath`, or `-NoBuild`.
+
+Undo it all with `windows\uninstall.ps1` (add `-Purge` to also delete your
+config and saved sessions).
+
 ## Usage
 
 ```sh
