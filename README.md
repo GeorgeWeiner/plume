@@ -68,9 +68,10 @@ and it hoists it into a `let extracted = …;` above the line.
 
 ## Configuration
 
-On first run Plume writes a documented config to
-`$XDG_CONFIG_HOME/plume/config.toml` (usually `~/.config/plume/config.toml`).
-It sets the default keymap and theme, and lets you rebind any command:
+On first run Plume writes a documented config — to `%APPDATA%\plume\config.toml`
+on Windows, or `$XDG_CONFIG_HOME/plume/config.toml` (usually
+`~/.config/plume/config.toml`) on Linux and macOS. It sets the default keymap
+and theme, and lets you rebind any command:
 
 ```toml
 # Base keymap: vscode | visual-studio | jetbrains | sublime
@@ -143,7 +144,8 @@ threads and skips binaries, `.git`, `target`, `node_modules`.
   (that would need an LSP client).
 - The terminal panel is a visual placeholder — no PTY.
 - Clipboard is internal to the app (no OSC52/system clipboard).
-- Files are saved with `\n` line endings and a trailing newline.
+- Files keep their original line endings (CRLF or LF) and are saved with a
+  trailing newline; new files use the platform default (CRLF on Windows).
 - Very large files (>1 MB) are excluded from project search.
 
 `demo/` contains sample files in several languages to show off highlighting:
