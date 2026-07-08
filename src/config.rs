@@ -1,34 +1,18 @@
-//! Config file: `$XDG_CONFIG_HOME/plume/config.toml` (or
-//! `~/.config/plume/config.toml`). A tiny hand-parsed TOML-ish subset — no
-//! external dependency. Holds the default keymap, an optional theme, and
-//! per-action keybinding overrides.
+//! Config file (platform path via `paths::config_file`). A tiny hand-parsed
+//! TOML-ish subset — no external dependency. Holds the default keymap, an
+//! optional theme, and per-action keybinding overrides.
 
-use std::env;
 use std::fs;
-use std::path::PathBuf;
 
 use crate::app::CommandId;
 use crate::keymap::{self, Chord};
+use crate::paths::config_file;
 
 #[derive(Default)]
 pub struct Config {
     pub keymap: Option<String>,
     pub theme: Option<String>,
     pub overrides: Vec<(CommandId, Vec<Chord>)>,
-}
-
-pub fn config_dir() -> Option<PathBuf> {
-    if let Ok(x) = env::var("XDG_CONFIG_HOME") {
-        if !x.is_empty() {
-            return Some(PathBuf::from(x).join("plume"));
-        }
-    }
-    let home = env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config").join("plume"))
-}
-
-pub fn config_file() -> Option<PathBuf> {
-    config_dir().map(|d| d.join("config.toml"))
 }
 
 fn strip_comment(line: &str) -> &str {

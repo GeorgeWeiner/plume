@@ -139,6 +139,17 @@ impl FileTree {
         }
     }
 
+    /// Currently expanded directories (for session persistence).
+    pub fn expanded_paths(&self) -> Vec<PathBuf> {
+        self.expanded.iter().cloned().collect()
+    }
+
+    /// Restore a set of expanded directories, then rebuild the flattened view.
+    pub fn set_expanded(&mut self, dirs: Vec<PathBuf>) {
+        self.expanded = dirs.into_iter().filter(|p| p.is_dir()).collect();
+        self.refresh();
+    }
+
     /// Expand ancestors of `path` and select it (reveal in explorer).
     pub fn reveal(&mut self, path: &Path) {
         let mut anc = path.parent();

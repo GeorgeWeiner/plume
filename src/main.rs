@@ -1,17 +1,21 @@
 mod app;
 mod buffer;
+mod cli;
 mod config;
 mod explorer;
 mod keymap;
 mod keys;
 mod palette;
+mod paths;
 mod search;
+mod session;
 mod syntax;
 mod theme;
 mod ui;
 
 use std::io;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::time::Duration;
 
 use ratatui::backend::CrosstermBackend;
@@ -37,34 +41,38 @@ fn restore_terminal(kitty: bool) {
     let _ = disable_raw_mode();
 }
 
-fn main() -> io::Result<()> {
-    // Resolve project root (and optionally a file to open) from argv.
-    let arg = std::env::args().nth(1);
+fn main() -> ExitCode {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let (root, open_file) = match arg {
-        Some(a) => {
-            let p = PathBuf::from(&a);
-            let p = if p.is_absolute() { p } else { cwd.join(p) };
-            if p.is_file() {
-                let parent = p.parent().map(PathBuf::from).unwrap_or(cwd);
-                (parent, Some(p))
-            } else if p.is_dir() {
-                (p, None)
-            } else {
-                eprintln!("plume: no such file or directory: {a}");
-                std::process::exit(1);
-            }
-        }
-        None => (cwd, None),
+    let inv = match cli::parse(std::env::args().skip(1), cwd) {
+        cli::Cli::Run(inv) => inv,
+        cli::Cli::Exit(code) => return ExitCode::from(code as u8),
     };
+    match tui(inv) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("plume: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    let mut app = App::new(root);
+fn tui(inv: cli::Invocation) -> io::Result<()> {
+    let mut app = App::new(inv.root.clone());
     // First run writes a documented default config; otherwise load the user's.
     config::ensure_template();
     app.apply_config(config::load());
-    if let Some(f) = open_file {
-        app.open_file(&f);
+
+    // Restore the saved session for this project (tabs, cursors, tree state),
+    // then open any files named explicitly on the command line.
+    if inv.restore {
+        if let Some(sess) = session::load(&inv.root) {
+            app.restore_session(sess);
+        }
     }
+    for f in &inv.files {
+        app.open_file(f);
+    }
+    session::set_last_project(&inv.root);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -91,6 +99,11 @@ fn main() -> io::Result<()> {
     let result = run(&mut terminal, &mut app);
 
     restore_terminal(kitty);
+
+    // Persist the workspace so the next launch in this folder resumes here.
+    session::save(&app.session_snapshot());
+    session::set_last_project(&app.root);
+
     result
 }
 
