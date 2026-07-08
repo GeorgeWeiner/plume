@@ -1,6 +1,8 @@
 mod app;
 mod buffer;
+mod config;
 mod explorer;
+mod keymap;
 mod keys;
 mod palette;
 mod search;
@@ -57,6 +59,9 @@ fn main() -> io::Result<()> {
     };
 
     let mut app = App::new(root);
+    // First run writes a documented default config; otherwise load the user's.
+    config::ensure_template();
+    app.apply_config(config::load());
     if let Some(f) = open_file {
         app.open_file(&f);
     }

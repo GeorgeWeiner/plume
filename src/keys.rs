@@ -5,8 +5,9 @@ use ratatui::crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use crate::app::{App, CommandId, Focus, Overlay, Panel};
+use crate::app::{App, Focus, Overlay, Panel};
 use crate::buffer::col_at_visual;
+use crate::keymap;
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
@@ -22,124 +23,72 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_key_inner(app: &mut App, key: KeyEvent) {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-
-    // Ctrl+K chord (Ctrl+K Ctrl+T = theme picker)
-    if app.chord_k {
-        app.chord_k = false;
-        if let KeyCode::Char(c) = key.code {
-            if c.eq_ignore_ascii_case(&'t') {
-                app.execute(CommandId::ThemePicker);
-            }
+    // Escape is universal: abort a pending chord, then close/clear context.
+    if key.code == KeyCode::Esc {
+        app.pending_chord = None;
+        if app.overlay.is_some() {
+            app.close_overlay();
+        } else if app.find.is_some() {
+            app.close_find();
+        } else if app.focus == Focus::Panel {
+            app.close_panel();
+        } else if app.focus == Focus::Explorer {
+            app.focus = Focus::Editor;
+        } else if let Some(buf) = app.buf_mut() {
+            buf.anchor = None;
         }
         return;
     }
-    if ctrl && !alt && app.overlay.is_none() {
-        if let KeyCode::Char(c) = key.code {
-            if c.eq_ignore_ascii_case(&'k') {
-                app.chord_k = true;
-                return;
-            }
-        }
-    }
 
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     if app.overlay.is_some() {
+        app.pending_chord = None;
         handle_overlay(app, key, ctrl);
         return;
     }
     if app.find_typing && app.find.is_some() {
+        app.pending_chord = None;
         handle_find_bar(app, key, ctrl);
         return;
     }
-    if handle_global(app, key, ctrl, alt, shift) {
+
+    let chord = keymap::normalize(&key);
+
+    // Complete a pending two-key sequence (e.g. Ctrl+K then Ctrl+T).
+    if let Some(prefix) = app.pending_chord.take() {
+        if let Some(c) = &chord {
+            if let Some(cmd) = app.keymap.lookup_seq(&prefix, c) {
+                app.execute(cmd);
+                return;
+            }
+        }
+        // not a recognized sequence — fall through, treat this key fresh
+    }
+
+    // Focus-specific handlers claim the keys they use (bare, unmodified) so a
+    // keymap command chord can't shadow explorer/panel navigation.
+    if app.focus == Focus::Explorer && handle_explorer(app, key) {
         return;
     }
-    match app.focus {
-        Focus::Explorer => handle_explorer(app, key, shift),
-        Focus::Panel => handle_panel(app, key),
-        Focus::Editor => handle_editor(app, key, ctrl, alt, shift),
+    if app.focus == Focus::Panel && handle_panel(app, key) {
+        return;
     }
-}
 
-fn ctrl_char(key: KeyEvent, target: char) -> bool {
-    matches!(key.code, KeyCode::Char(c) if c.eq_ignore_ascii_case(&target))
-}
-
-fn handle_global(app: &mut App, key: KeyEvent, ctrl: bool, alt: bool, shift: bool) -> bool {
-    if ctrl && !alt {
-        let cmd = if ctrl_char(key, 'q') {
-            Some(CommandId::Quit)
-        } else if ctrl_char(key, 's') {
-            Some(CommandId::Save)
-        } else if ctrl_char(key, 'n') {
-            Some(CommandId::NewFile)
-        } else if ctrl_char(key, 'p') && shift {
-            app.open_command_palette();
-            return true;
-        } else if ctrl_char(key, 'p') {
-            Some(CommandId::QuickOpen)
-        } else if ctrl_char(key, 'f') && shift {
-            Some(CommandId::GlobalSearch)
-        } else if ctrl_char(key, 'f') {
-            Some(CommandId::Find)
-        } else if ctrl_char(key, 'g') {
-            Some(CommandId::GotoLine)
-        } else if ctrl_char(key, 'b') {
-            Some(CommandId::ToggleSidebar)
-        } else if ctrl_char(key, 'e') {
-            Some(CommandId::FocusExplorer)
-        } else if ctrl_char(key, 'j') || ctrl_char(key, '`') {
-            Some(CommandId::ToggleTerminal)
-        } else if ctrl_char(key, 'w') {
-            Some(CommandId::CloseTab)
-        } else if key.code == KeyCode::PageDown {
-            Some(CommandId::NextTab)
-        } else if key.code == KeyCode::PageUp {
-            Some(CommandId::PrevTab)
-        } else {
-            None
-        };
-        if let Some(cmd) = cmd {
+    // Data-driven command dispatch from the active keymap.
+    if let Some(c) = &chord {
+        if let Some(cmd) = app.keymap.lookup_single(c) {
             app.execute(cmd);
-            return true;
+            return;
+        }
+        if app.keymap.is_prefix(c) {
+            app.pending_chord = Some(c.clone());
+            return;
         }
     }
-    match key.code {
-        KeyCode::F(1) => {
-            app.open_command_palette();
-            true
-        }
-        KeyCode::F(3) => {
-            if app.find.is_some() {
-                app.find_jump(!shift, true);
-            } else {
-                app.execute(CommandId::Find);
-            }
-            true
-        }
-        KeyCode::F(12) if shift => {
-            app.execute(CommandId::FindReferences);
-            true
-        }
-        KeyCode::Char(c) if alt && shift && c.eq_ignore_ascii_case(&'f') => {
-            app.execute(CommandId::FormatDocument);
-            true
-        }
-        KeyCode::Esc => {
-            if app.find.is_some() {
-                app.close_find();
-            } else if app.focus == Focus::Panel {
-                app.close_panel();
-            } else if app.focus == Focus::Explorer {
-                app.focus = Focus::Editor;
-            } else if let Some(buf) = app.buf_mut() {
-                buf.anchor = None;
-            }
-            true
-        }
-        _ => false,
+
+    // Everything else: universal movement / text editing.
+    if app.focus == Focus::Editor {
+        handle_editor(app, key);
     }
 }
 
@@ -249,7 +198,12 @@ fn handle_find_bar(app: &mut App, key: KeyEvent, ctrl: bool) {
     }
 }
 
-fn handle_explorer(app: &mut App, key: KeyEvent, shift: bool) {
+/// Returns true if the key was consumed. Only bare (unmodified) keys are
+/// claimed, so Ctrl/Alt command chords fall through to the keymap.
+fn handle_explorer(app: &mut App, key: KeyEvent) -> bool {
+    if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        return false;
+    }
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => app.tree.move_sel(-1),
         KeyCode::Down | KeyCode::Char('j') => app.tree.move_sel(1),
@@ -258,20 +212,24 @@ fn handle_explorer(app: &mut App, key: KeyEvent, shift: bool) {
         KeyCode::Enter | KeyCode::Char('l') => app.explorer_open(),
         KeyCode::Right => app.tree.expand(),
         KeyCode::Left | KeyCode::Char('h') => app.tree.collapse(),
-        KeyCode::Char('a') | KeyCode::Char('n') if !shift => app.explorer_new_file(),
+        KeyCode::Char('a') | KeyCode::Char('n') => app.explorer_new_file(),
         KeyCode::Char('A') | KeyCode::Char('N') => app.explorer_new_dir(),
         KeyCode::Char('r') | KeyCode::F(2) => app.explorer_rename(),
         KeyCode::Char('d') | KeyCode::Delete => app.explorer_delete(),
-        KeyCode::Char('R') => {
-            app.tree.refresh();
-        }
-        _ => {}
+        KeyCode::Char('R') => app.tree.refresh(),
+        _ => return false,
     }
+    true
 }
 
-fn handle_panel(app: &mut App, key: KeyEvent) {
+/// Returns true if the key was consumed (see handle_explorer).
+fn handle_panel(app: &mut App, key: KeyEvent) -> bool {
+    if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        return false;
+    }
     let mut open = false;
     let mut close = false;
+    let mut handled = true;
     match &mut app.panel {
         Panel::Search(pane) => match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
@@ -284,14 +242,13 @@ fn handle_panel(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Enter => open = true,
             KeyCode::Char('q') => close = true,
-            _ => {}
+            _ => handled = false,
         },
-        Panel::Terminal => {
-            if matches!(key.code, KeyCode::Char('q') | KeyCode::Enter) {
-                close = true;
-            }
-        }
-        Panel::None => app.focus = Focus::Editor,
+        Panel::Terminal => match key.code {
+            KeyCode::Char('q') | KeyCode::Enter => close = true,
+            _ => handled = false,
+        },
+        Panel::None => return false,
     }
     if open {
         app.open_search_result();
@@ -299,44 +256,25 @@ fn handle_panel(app: &mut App, key: KeyEvent) {
     if close {
         app.close_panel();
     }
+    handled
 }
 
-fn handle_editor(app: &mut App, key: KeyEvent, ctrl: bool, alt: bool, shift: bool) {
+/// Universal cursor movement and text editing. Command chords (undo, copy,
+/// duplicate line, comment, …) are dispatched earlier via the keymap; this
+/// handles only the keys that are the same across every editor.
+fn handle_editor(app: &mut App, key: KeyEvent) {
     if app.buffers.is_empty() {
         return;
     }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let page = app.layout.text.height.saturating_sub(1).max(1) as usize;
 
-    // app-level clipboard / undo actions
-    if ctrl && !alt {
-        if ctrl_char(key, 'c') {
-            app.copy();
-            return;
-        }
-        if ctrl_char(key, 'x') {
-            app.cut();
-            app.follow = true;
-            return;
-        }
-        if ctrl_char(key, 'v') {
-            app.paste();
-            app.follow = true;
-            return;
-        }
-    }
-    if ctrl && ctrl_char(key, 'z') && shift {
-        if let Some(b) = app.buf_mut() {
-            b.redo();
-        }
-        app.after_editor_action();
-        return;
-    }
-
-    let lang_comment = app.buf().and_then(|b| b.language.comment_prefix());
     let Some(buf) = app.buffers.get_mut(app.active) else {
         return;
     };
-    let mut edited = true; // most branches move or edit; used to refresh find state
+    let mut edited = true;
 
     match key.code {
         // movement
@@ -344,8 +282,6 @@ fn handle_editor(app: &mut App, key: KeyEvent, ctrl: bool, alt: bool, shift: boo
         KeyCode::Right if ctrl => buf.move_word(true, shift),
         KeyCode::Left => buf.move_left(shift),
         KeyCode::Right => buf.move_right(shift),
-        KeyCode::Up if alt => buf.move_line(false),
-        KeyCode::Down if alt => buf.move_line(true),
         KeyCode::Up => buf.move_up(shift),
         KeyCode::Down => buf.move_down(shift),
         KeyCode::Home if ctrl => buf.move_doc(false, shift),
@@ -368,28 +304,6 @@ fn handle_editor(app: &mut App, key: KeyEvent, ctrl: bool, alt: bool, shift: boo
             }
         }
         KeyCode::BackTab => buf.indent(true),
-        KeyCode::Char(c) if ctrl && !alt => {
-            match c.to_ascii_lowercase() {
-                'a' => buf.select_all(),
-                'z' => {
-                    buf.undo();
-                }
-                'y' => {
-                    buf.redo();
-                }
-                'd' => buf.duplicate_line(),
-                '/' | '_' | '7' => {
-                    if let Some(prefix) = lang_comment {
-                        buf.toggle_comment(prefix);
-                    }
-                }
-                _ => edited = false,
-            }
-        }
-        KeyCode::F(2) => {
-            app.rename_symbol_prompt();
-            return;
-        }
         KeyCode::Char(c) if !ctrl && !alt => buf.insert_char(c),
         _ => edited = false,
     }

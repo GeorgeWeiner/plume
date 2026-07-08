@@ -31,35 +31,33 @@ get the full keymap, including `Ctrl+Shift+…` combos; on legacy terminals
 `Ctrl+Shift+F` may arrive as `Ctrl+F` — the command palette (`F1`) has every
 command as a fallback.
 
-## Keymap
+## Keymaps
 
-| Key | Action |
-| --- | --- |
-| `Ctrl+P` | Quick open (fuzzy file finder) |
-| `Ctrl+Shift+P` / `F1` | Command palette |
-| `Ctrl+Shift+F` | Search in project (results panel, `↵` jumps) |
-| `Ctrl+F` | Find in file (live highlight, `↵`/`F3` next, `Shift+F3` prev) |
-| `Ctrl+G` | Go to line |
-| `Ctrl+S` | Save (`Save As` prompt for untitled buffers) |
-| `Ctrl+N` | New untitled file |
-| `Ctrl+W` | Close tab (warns once on unsaved changes) |
-| `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next tab |
-| `Ctrl+B` | Toggle sidebar |
-| `Ctrl+E` | Focus file explorer (again to return) |
-| ``Ctrl+` `` / `Ctrl+J` | Toggle terminal panel (placeholder) |
-| `Ctrl+K Ctrl+T` | Theme picker (live preview) |
-| `F2` | Rename symbol — naive whole-word rename, current file |
-| `Shift+Alt+F` | Format document — trims trailing whitespace |
-| `Shift+F12` | Find references — project-wide word search |
-| `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
-| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (internal clipboard) |
-| `Ctrl+A` | Select all |
-| `Ctrl+D` | Duplicate line |
-| `Alt+↑` / `Alt+↓` | Move line up / down |
-| `Ctrl+/` | Toggle line comment |
-| `Shift+arrows`, `Ctrl+arrows` | Select, move by word |
-| `Tab` / `Shift+Tab` | Indent / dedent selection |
-| `Esc` | Close popup / find bar / panel, clear selection |
+Plume ships four keymap presets — **VS Code** (default), **Visual Studio**,
+**JetBrains**, and **Sublime Text**. Switch live with `Ctrl+K Ctrl+M` (or the
+command palette → *Keymap: Select Preset…*); the choice is saved to your config
+and restored next launch. The active keymap is shown on the right of the status
+bar (`⌨ VS Code`), and the command palette lists each command's shortcut for the
+current preset.
+
+Command shortcuts vary by preset — a few examples:
+
+| Command | VS Code | Visual Studio | JetBrains | Sublime |
+| --- | --- | --- | --- | --- |
+| Go to file | `Ctrl+P` | `Ctrl+,` | `Ctrl+Shift+N` | `Ctrl+P` |
+| Command palette | `Ctrl+Shift+P` | `Ctrl+Shift+P` | `Ctrl+Shift+A` | `Ctrl+Shift+P` |
+| Duplicate line | `Shift+Alt+↓` | `Ctrl+D` | `Ctrl+D` | `Ctrl+Shift+D` |
+| Delete line | `Ctrl+Shift+K` | `Ctrl+Shift+L` | `Ctrl+Y` | `Ctrl+Shift+K` |
+| Toggle comment | `Ctrl+/` | `Ctrl+K Ctrl+C` | `Ctrl+/` | `Ctrl+/` |
+| Format document | `Shift+Alt+F` | `Ctrl+K Ctrl+D` | `Ctrl+Alt+L` | — |
+| Rename symbol | `F2` | `Ctrl+R Ctrl+R` | `Shift+F6` | `F2` |
+
+Universal keys (same in every preset): arrow/`Home`/`End`/`PgUp`/`PgDn`
+movement, `Ctrl+arrows` word-jump, `Shift+…` to select, `Tab`/`Shift+Tab`
+indent, `F1` command palette, `F3`/`Shift+F3` find next/prev, and `Esc` to close
+a popup / find bar / panel or clear the selection. Two-key sequences (like
+`Ctrl+K Ctrl+T` for the theme picker) show a pending indicator in the status bar
+after the first chord.
 
 **In the file tree** (`Ctrl+E` to focus): `↑↓`/`jk` move, `↵` open/toggle,
 `←→`/`hl` collapse/expand, `a`/`n` new file, `A` new folder, `r`/`F2` rename,
@@ -67,6 +65,35 @@ command as a fallback.
 
 The palette also exposes **Extract Variable**: select a single-line expression
 and it hoists it into a `let extracted = …;` above the line.
+
+## Configuration
+
+On first run Plume writes a documented config to
+`$XDG_CONFIG_HOME/plume/config.toml` (usually `~/.config/plume/config.toml`).
+It sets the default keymap and theme, and lets you rebind any command:
+
+```toml
+# Base keymap: vscode | visual-studio | jetbrains | sublime
+keymap = "jetbrains"
+theme  = "Midnight Ocean"
+
+# Rebind individual commands: action = "chord" (or "chord chord" for a sequence)
+[keybindings]
+duplicate_line = "ctrl+shift+d"
+toggle_comment = "ctrl+shift+c"
+theme_picker   = "ctrl+k ctrl+t"
+```
+
+Chords are written like `ctrl+shift+p`, `f3`, `ctrl+slash`, `alt+up`; a two-key
+sequence is space-separated. Overrides sit on top of the chosen preset and
+survive switching keymaps. The full action list is in the generated file's
+comments. Choosing a keymap or theme from the in-app pickers rewrites just that
+line, preserving your `[keybindings]`.
+
+> Terminal note: `Ctrl+Shift+…` combos need a terminal that supports the kitty
+> keyboard protocol (kitty, foot, WezTerm, Ghostty, recent Konsole). Elsewhere
+> they arrive as plain `Ctrl+…`; every command is still reachable from the
+> palette (`F1`).
 
 ## Themes
 
@@ -85,19 +112,23 @@ src/
 ├── app.rs       central state: buffers, focus, overlays, commands
 ├── buffer.rs    text buffer: edits, undo/redo, selection, movement
 ├── explorer.rs  sidebar file tree (create/rename/delete/reveal)
+├── keymap.rs    chords, presets (VS Code/VS/JetBrains/Sublime), parsing
+├── config.rs    config file: load / persist / template
 ├── palette.rs   command palette / quick open / fuzzy matcher / input line
-├── search.rs    project-wide grep + file listing
+├── search.rs    project-wide grep + file listing (threaded)
 ├── syntax.rs    hand-rolled per-line highlighter (12 languages)
 ├── theme.rs     theme definitions
-├── keys.rs      keyboard + mouse dispatch
+├── keys.rs      keyboard + mouse dispatch (keymap-driven)
 └── ui.rs        all rendering
 ```
 
 Design choices in the spirit of "lightweight": the only dependency is ratatui;
 syntax highlighting is a small hand-written scanner with one line of carried
-state (block comments) instead of a grammar engine; undo is snapshot-based
-with typing coalescing; project search walks the tree directly and skips
-binaries, `.git`, `target`, `node_modules`.
+state (block comments) instead of a grammar engine; undo is delta-based (each
+edit records only its changed line range) with typing coalescing; keybindings
+are a data-driven table of chord-sequences resolved against a preset; the
+config parser is a hand-rolled TOML subset; project search runs on worker
+threads and skips binaries, `.git`, `target`, `node_modules`.
 
 ## Known prototype limits
 

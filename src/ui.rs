@@ -8,6 +8,7 @@ use ratatui::Frame;
 
 use crate::app::{App, Focus, Level, Overlay, Panel};
 use crate::buffer::{visual_col, Buffer, TAB_STOP};
+use crate::keymap;
 use crate::palette::PaletteMode;
 use crate::search;
 use crate::syntax;
@@ -659,6 +660,15 @@ fn draw_status(f: &mut Frame, app: &App, t: &Theme) {
     let mut left: Vec<Span> = vec![Span::styled(format!(" {mode} "), chip)];
     let mut right: Vec<Span> = Vec::new();
 
+    // Pending two-key chord (e.g. after Ctrl+K), shown prominently.
+    if let Some(chord) = &app.pending_chord {
+        let label = keymap::format_binding(std::slice::from_ref(chord));
+        left.push(Span::styled(
+            format!(" {label} … "),
+            Style::default().fg(t.accent_fg).bg(t.yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     match app.buf() {
         Some(b) => {
             let path = b
@@ -682,6 +692,7 @@ fn draw_status(f: &mut Frame, app: &App, t: &Theme) {
             left.push(Span::styled(format!("  {}", app.root.display()), dim));
         }
     }
+    right.push(Span::styled(format!("⌨ {}  ", app.keymap.name), dim));
     right.push(Span::styled(format!(" ✦ {} ", t.name), chip));
 
     let lw: usize = left.iter().map(|s| s.content.chars().count()).sum();
@@ -847,6 +858,7 @@ fn draw_overlay(f: &mut Frame, app: &App, t: &Theme) {
                 PaletteMode::Commands => " COMMAND PALETTE ",
                 PaletteMode::Files => " GO TO FILE ",
                 PaletteMode::Themes => " COLOR THEME ",
+                PaletteMode::Keymaps => " KEYMAP ",
             };
             let block = Block::default()
                 .borders(Borders::ALL)

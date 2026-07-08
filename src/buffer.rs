@@ -553,6 +553,31 @@ impl Buffer {
         self.record(g, EditKind::Other, r, old, 2, cb);
     }
 
+    /// Delete the current line, or every line spanned by the selection.
+    pub fn delete_line(&mut self) {
+        let (start, end) = match self.selection() {
+            Some((a, b)) => (a.0, b.0),
+            None => (self.cursor.0, self.cursor.0),
+        };
+        let g = self.next_group();
+        let cb = self.cursor;
+        if end - start + 1 >= self.lines.len() {
+            // deleting all lines -> leave a single empty line
+            let old = std::mem::replace(&mut self.lines, vec![String::new()]);
+            self.cursor = (0, 0);
+            self.anchor = None;
+            self.record(g, EditKind::Other, 0, old, 1, cb);
+        } else {
+            let old = self.lines[start..=end].to_vec();
+            self.lines.drain(start..=end);
+            let new_row = start.min(self.lines.len().saturating_sub(1));
+            self.cursor = (new_row, 0);
+            self.anchor = None;
+            self.record(g, EditKind::Other, start, old, 0, cb);
+        }
+        self.clamp_cursor();
+    }
+
     pub fn move_line(&mut self, down: bool) {
         let r = self.cursor.0;
         if down && r + 1 < self.lines.len() {

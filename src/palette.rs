@@ -108,6 +108,7 @@ pub enum PaletteMode {
     Commands,
     Files,
     Themes,
+    Keymaps,
 }
 
 #[derive(Clone)]
@@ -115,6 +116,7 @@ pub enum PaletteAction {
     Command(CommandId),
     OpenFile(PathBuf),
     SetTheme(usize),
+    SetKeymap(String),
 }
 
 pub struct PaletteItem {

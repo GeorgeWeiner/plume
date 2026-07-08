@@ -9,7 +9,9 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 
 use crate::buffer::Buffer;
+use crate::config;
 use crate::explorer::FileTree;
+use crate::keymap::{Chord, Keymap};
 use crate::palette::{InputLine, PaletteAction, PaletteItem, PaletteMode, PaletteState};
 use crate::search::{self, SearchMatch, SearchMsg};
 use crate::theme::Theme;
@@ -34,7 +36,7 @@ pub struct Notification {
     pub at: Instant,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CommandId {
     NewFile,
     QuickOpen,
@@ -44,40 +46,67 @@ pub enum CommandId {
     NextTab,
     PrevTab,
     Find,
+    FindNext,
+    FindPrev,
     GlobalSearch,
     GotoLine,
     ToggleSidebar,
     ToggleTerminal,
     ThemePicker,
+    KeymapPicker,
+    CommandPalette,
     RenameSymbol,
     FormatDocument,
     FindReferences,
     ExtractVariable,
     FocusExplorer,
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    DuplicateLine,
+    DeleteLine,
+    MoveLinesUp,
+    MoveLinesDown,
+    ToggleComment,
+    Indent,
+    Outdent,
     Quit,
 }
 
-pub fn command_list() -> Vec<(CommandId, &'static str, &'static str)> {
+/// (command, palette label). The key hint shown alongside is derived from the
+/// active keymap at display time, so it always reflects the current preset.
+pub fn command_list() -> Vec<(CommandId, &'static str)> {
     vec![
-        (CommandId::QuickOpen, "Go to File…", "Ctrl+P"),
-        (CommandId::GlobalSearch, "Search in Project…", "Ctrl+Shift+F"),
-        (CommandId::Find, "Find in File", "Ctrl+F"),
-        (CommandId::GotoLine, "Go to Line…", "Ctrl+G"),
-        (CommandId::NewFile, "New Untitled File", "Ctrl+N"),
-        (CommandId::Save, "Save File", "Ctrl+S"),
-        (CommandId::SaveAs, "Save As…", ""),
-        (CommandId::CloseTab, "Close Editor Tab", "Ctrl+W"),
-        (CommandId::NextTab, "Next Tab", "Ctrl+PgDn"),
-        (CommandId::PrevTab, "Previous Tab", "Ctrl+PgUp"),
-        (CommandId::ToggleSidebar, "Toggle Sidebar", "Ctrl+B"),
-        (CommandId::ToggleTerminal, "Toggle Terminal Panel", "Ctrl+`"),
-        (CommandId::FocusExplorer, "Focus Explorer", "Ctrl+E"),
-        (CommandId::ThemePicker, "Color Theme…", "Ctrl+K Ctrl+T"),
-        (CommandId::RenameSymbol, "Rename Symbol (naive)", "F2"),
-        (CommandId::FormatDocument, "Format Document (basic)", "Shift+Alt+F"),
-        (CommandId::FindReferences, "Find All References (naive)", "Shift+F12"),
-        (CommandId::ExtractVariable, "Extract Variable (naive)", ""),
-        (CommandId::Quit, "Quit Plume", "Ctrl+Q"),
+        (CommandId::QuickOpen, "Go to File…"),
+        (CommandId::GlobalSearch, "Search in Project…"),
+        (CommandId::Find, "Find in File"),
+        (CommandId::GotoLine, "Go to Line…"),
+        (CommandId::NewFile, "New Untitled File"),
+        (CommandId::Save, "Save File"),
+        (CommandId::SaveAs, "Save As…"),
+        (CommandId::CloseTab, "Close Editor Tab"),
+        (CommandId::NextTab, "Next Tab"),
+        (CommandId::PrevTab, "Previous Tab"),
+        (CommandId::ToggleSidebar, "Toggle Sidebar"),
+        (CommandId::ToggleTerminal, "Toggle Terminal Panel"),
+        (CommandId::FocusExplorer, "Focus Explorer"),
+        (CommandId::ThemePicker, "Color Theme…"),
+        (CommandId::KeymapPicker, "Keymap: Select Preset…"),
+        (CommandId::ToggleComment, "Toggle Line Comment"),
+        (CommandId::DuplicateLine, "Duplicate Line"),
+        (CommandId::DeleteLine, "Delete Line"),
+        (CommandId::MoveLinesUp, "Move Line Up"),
+        (CommandId::MoveLinesDown, "Move Line Down"),
+        (CommandId::Undo, "Undo"),
+        (CommandId::Redo, "Redo"),
+        (CommandId::RenameSymbol, "Rename Symbol (naive)"),
+        (CommandId::FormatDocument, "Format Document (basic)"),
+        (CommandId::FindReferences, "Find All References (naive)"),
+        (CommandId::ExtractVariable, "Extract Variable (naive)"),
+        (CommandId::Quit, "Quit Plume"),
     ]
 }
 
@@ -155,7 +184,11 @@ pub struct App {
     pub find_typing: bool,
     pub clipboard: String,
     pub notices: Vec<Notification>,
-    pub chord_k: bool,
+    pub keymap: Keymap,
+    /// First chord of a pending two-key sequence (e.g. after Ctrl+K).
+    pub pending_chord: Option<Chord>,
+    /// User keybinding overrides from the config file (survive keymap switches).
+    key_overrides: Vec<(CommandId, Vec<Chord>)>,
     pub should_quit: bool,
     pub layout: LayoutInfo,
     pub tab_hits: Vec<(u16, u16, usize)>,
@@ -188,7 +221,9 @@ impl App {
             find_typing: false,
             clipboard: String::new(),
             notices: Vec::new(),
-            chord_k: false,
+            keymap: Keymap::preset("vscode", &[]),
+            pending_chord: None,
+            key_overrides: Vec::new(),
             should_quit: false,
             layout: LayoutInfo::default(),
             tab_hits: Vec::new(),
@@ -292,6 +327,36 @@ impl App {
 
     pub fn theme(&self) -> &Theme {
         &self.themes[self.theme_idx]
+    }
+
+    // ---- keymap & config ----
+
+    /// Apply a loaded config: overrides first, then keymap, then theme.
+    pub fn apply_config(&mut self, cfg: config::Config) {
+        self.key_overrides = cfg.overrides;
+        let id = cfg.keymap.as_deref().unwrap_or("vscode");
+        self.keymap = Keymap::preset(id, &self.key_overrides);
+        if let Some(name) = cfg.theme {
+            self.set_theme_by_name(&name);
+        }
+    }
+
+    pub fn set_theme_by_name(&mut self, name: &str) {
+        if let Some(i) = self
+            .themes
+            .iter()
+            .position(|t| t.name.eq_ignore_ascii_case(name))
+        {
+            self.theme_idx = i;
+        }
+    }
+
+    /// Switch keymap preset from the picker: rebuild and persist to config.
+    pub fn set_keymap(&mut self, id: &str) {
+        self.keymap = Keymap::preset(id, &self.key_overrides);
+        config::set_value("keymap", id);
+        let name = self.keymap.name.clone();
+        self.notify(format!("Keymap: {name} (saved to config)"), Level::Info);
     }
 
     pub fn buf(&self) -> Option<&Buffer> {
@@ -409,6 +474,20 @@ impl App {
             CommandId::NextTab => self.cycle_tab(1),
             CommandId::PrevTab => self.cycle_tab(-1),
             CommandId::Find => self.open_find(),
+            CommandId::FindNext => {
+                if self.find.is_some() {
+                    self.find_jump(true, true);
+                } else {
+                    self.open_find();
+                }
+            }
+            CommandId::FindPrev => {
+                if self.find.is_some() {
+                    self.find_jump(false, true);
+                } else {
+                    self.open_find();
+                }
+            }
             CommandId::GlobalSearch => {
                 self.open_prompt(PromptKind::GlobalSearch, "Search in project", "")
             }
@@ -416,6 +495,8 @@ impl App {
             CommandId::ToggleSidebar => self.sidebar = !self.sidebar,
             CommandId::ToggleTerminal => self.toggle_terminal(),
             CommandId::ThemePicker => self.open_theme_picker(),
+            CommandId::KeymapPicker => self.open_keymap_picker(),
+            CommandId::CommandPalette => self.open_command_palette(),
             CommandId::RenameSymbol => self.rename_symbol_prompt(),
             CommandId::FormatDocument => self.format_document(),
             CommandId::FindReferences => self.find_references(),
@@ -423,6 +504,71 @@ impl App {
             CommandId::FocusExplorer => {
                 self.sidebar = true;
                 self.focus = if self.focus == Focus::Explorer { Focus::Editor } else { Focus::Explorer };
+            }
+            CommandId::Undo => {
+                if let Some(b) = self.buf_mut() {
+                    b.undo();
+                }
+                self.after_editor_action();
+            }
+            CommandId::Redo => {
+                if let Some(b) = self.buf_mut() {
+                    b.redo();
+                }
+                self.after_editor_action();
+            }
+            CommandId::Cut => self.cut(),
+            CommandId::Copy => self.copy(),
+            CommandId::Paste => self.paste(),
+            CommandId::SelectAll => {
+                if let Some(b) = self.buf_mut() {
+                    b.select_all();
+                }
+                self.follow = true;
+            }
+            CommandId::DuplicateLine => {
+                if let Some(b) = self.buf_mut() {
+                    b.duplicate_line();
+                }
+                self.after_editor_action();
+            }
+            CommandId::DeleteLine => {
+                if let Some(b) = self.buf_mut() {
+                    b.delete_line();
+                }
+                self.after_editor_action();
+            }
+            CommandId::MoveLinesUp => {
+                if let Some(b) = self.buf_mut() {
+                    b.move_line(false);
+                }
+                self.after_editor_action();
+            }
+            CommandId::MoveLinesDown => {
+                if let Some(b) = self.buf_mut() {
+                    b.move_line(true);
+                }
+                self.after_editor_action();
+            }
+            CommandId::ToggleComment => {
+                if let Some(prefix) = self.buf().and_then(|b| b.language.comment_prefix()) {
+                    if let Some(b) = self.buf_mut() {
+                        b.toggle_comment(prefix);
+                    }
+                    self.after_editor_action();
+                }
+            }
+            CommandId::Indent => {
+                if let Some(b) = self.buf_mut() {
+                    b.indent(false);
+                }
+                self.after_editor_action();
+            }
+            CommandId::Outdent => {
+                if let Some(b) = self.buf_mut() {
+                    b.indent(true);
+                }
+                self.after_editor_action();
             }
             CommandId::Quit => self.request_quit(),
         }
@@ -441,13 +587,28 @@ impl App {
     pub fn open_command_palette(&mut self) {
         let items = command_list()
             .into_iter()
-            .map(|(id, label, hint)| PaletteItem {
+            .map(|(id, label)| PaletteItem {
                 label: label.to_string(),
-                hint: hint.to_string(),
+                hint: self.keymap.format_for(id).unwrap_or_default(),
                 action: PaletteAction::Command(id),
             })
             .collect();
         self.overlay = Some(Overlay::Palette(PaletteState::new(PaletteMode::Commands, items)));
+    }
+
+    pub fn open_keymap_picker(&mut self) {
+        use crate::keymap::PRESETS;
+        let items = PRESETS
+            .iter()
+            .map(|(id, name)| PaletteItem {
+                label: name.to_string(),
+                hint: if *id == self.keymap.id { "current".into() } else { String::new() },
+                action: PaletteAction::SetKeymap(id.to_string()),
+            })
+            .collect();
+        let mut st = PaletteState::new(PaletteMode::Keymaps, items);
+        st.selected = PRESETS.iter().position(|(id, _)| *id == self.keymap.id).unwrap_or(0);
+        self.overlay = Some(Overlay::Palette(st));
     }
 
     pub fn open_quick_open(&mut self) {
@@ -529,7 +690,12 @@ impl App {
                 self.theme_idx = i;
                 self.theme_before_preview = None;
                 let name = self.themes[i].name;
+                config::set_value("theme", name);
                 self.notify(format!("Theme: {name}"), Level::Info);
+            }
+            PaletteAction::SetKeymap(id) => {
+                self.theme_before_preview = None;
+                self.set_keymap(&id);
             }
         }
     }
