@@ -1,0 +1,13 @@
+[package]
+name = "plume"
+version = "0.1.0"
+edition = "2021"
+description = "Plume — a feather-light terminal IDE prototype"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+
+[profile.release]
+lto = true
+strip = true

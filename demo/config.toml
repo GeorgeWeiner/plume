@@ -1,0 +1,14 @@
+# Demo file: TOML syntax highlighting showcase.
+
+[editor]
+theme = "Midnight Ocean"
+tab_width = 4
+line_numbers = true
+
+[keys]
+quick_open = "ctrl+p"
+save = "ctrl+s"
+
+[performance]
+max_file_size = 1000000
+startup_budget_ms = 16.7
