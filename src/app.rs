@@ -14,6 +14,7 @@ use crate::explorer::FileTree;
 use crate::keymap::{Chord, Keymap};
 use crate::palette::{InputLine, PaletteAction, PaletteItem, PaletteMode, PaletteState};
 use crate::search::{self, SearchMatch, SearchMsg};
+use crate::session;
 use crate::theme::Theme;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -357,6 +358,64 @@ impl App {
         config::set_value("keymap", id);
         let name = self.keymap.name.clone();
         self.notify(format!("Keymap: {name} (saved to config)"), Level::Info);
+    }
+
+    // ---- session persistence ----
+
+    /// Capture the current workspace state for saving on exit.
+    pub fn session_snapshot(&self) -> session::Session {
+        let mut files = Vec::new();
+        let mut active = 0;
+        for (i, b) in self.buffers.iter().enumerate() {
+            if let Some(p) = &b.path {
+                if i == self.active {
+                    active = files.len();
+                }
+                files.push(session::OpenFile {
+                    path: p.clone(),
+                    row: b.cursor.0,
+                    col: b.cursor.1,
+                    scroll: b.scroll_row,
+                });
+            }
+        }
+        session::Session {
+            root: self.root.clone(),
+            files,
+            active,
+            sidebar: self.sidebar,
+            expanded: self.tree.expanded_paths(),
+        }
+    }
+
+    /// Reopen the files, cursors, and view state from a saved session.
+    pub fn restore_session(&mut self, s: session::Session) {
+        for f in &s.files {
+            if !f.path.is_file() {
+                continue; // file moved or deleted since last time
+            }
+            if self.buffers.iter().any(|b| b.path.as_deref() == Some(f.path.as_path())) {
+                continue;
+            }
+            if let Ok(mut buf) = Buffer::from_path(&f.path) {
+                buf.goto(f.row, f.col);
+                buf.scroll_row = f.scroll.min(buf.lines.len().saturating_sub(1));
+                self.buffers.push(buf);
+            }
+        }
+        if !self.buffers.is_empty() {
+            self.active = s.active.min(self.buffers.len() - 1);
+            self.focus = Focus::Editor;
+        }
+        self.sidebar = s.sidebar;
+        if !s.expanded.is_empty() {
+            self.tree.set_expanded(s.expanded);
+        }
+        if let Some(p) = self.buffers.get(self.active).and_then(|b| b.path.clone()) {
+            self.tree.reveal(&p);
+        }
+        self.follow = true;
+        self.refresh_find();
     }
 
     pub fn buf(&self) -> Option<&Buffer> {

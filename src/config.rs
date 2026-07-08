@@ -3,12 +3,11 @@
 //! Unix. A tiny hand-parsed TOML-ish subset — no external dependency. Holds the
 //! default keymap, an optional theme, and per-action keybinding overrides.
 
-use std::env;
 use std::fs;
-use std::path::PathBuf;
 
 use crate::app::CommandId;
 use crate::keymap::{self, Chord};
+use crate::paths::config_file;
 
 #[derive(Default)]
 pub struct Config {

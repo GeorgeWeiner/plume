@@ -9,20 +9,37 @@ keybindings from VS Code, the polish ambitions from JetBrains.
 > LSP-shaped features (semantic rename, real formatting, the terminal panel)
 > are honest naive versions or placeholders.
 
-## Build & run
+## Install
+
+```sh
+# installs a `plume` binary to ~/.cargo/bin (make sure it's on your PATH)
+cargo install --path .
+```
+
+Then `plume` works from anywhere. Or just build and run in place:
 
 ```sh
 cargo build --release
-
-# open a project directory
-./target/release/plume demo
-
-# or open whatever directory you're in
-cargo run --release
-
-# or open a single file (its parent dir becomes the project)
-cargo run --release -- demo/main.rs
+./target/release/plume
 ```
+
+## Usage
+
+```sh
+plume                 # open the current directory as a project
+plume path/to/dir     # open that directory as a project
+plume a.rs b.rs       # open those files (project root = current dir)
+plume notes.md        # a not-yet-existing path is created on first save
+plume -r, --resume    # reopen your most recent session, from anywhere
+plume -n, --new       # open fresh, without restoring a saved session
+plume -h / -v         # help / version
+```
+
+Opening a folder **restores its last session** — the tabs you had open, each
+file's cursor position, the sidebar state, and which tree folders were
+expanded — so you pick up exactly where you left off. `--new` starts clean;
+`--resume` jumps back into your most recent project regardless of where you run
+it. Sessions are saved automatically on exit.
 
 Requires a truecolor-capable terminal. Mouse is supported (click to focus,
 click tabs/tree/search results, drag to select, wheel to scroll). Terminals
@@ -30,6 +47,18 @@ with the kitty keyboard protocol (kitty, foot, WezTerm, recent Konsole/Ghostty)
 get the full keymap, including `Ctrl+Shift+…` combos; on legacy terminals
 `Ctrl+Shift+F` may arrive as `Ctrl+F` — the command palette (`F1`) has every
 command as a fallback.
+
+## Where things are saved
+
+Plume follows each platform's conventions (and honors `XDG_CONFIG_HOME` /
+`XDG_STATE_HOME` everywhere):
+
+| | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Config (`config.toml`) | `~/.config/plume` | `~/Library/Application Support/plume` | `%APPDATA%\plume` |
+| Sessions & state | `~/.local/state/plume` | `~/Library/Application Support/plume` | `%LOCALAPPDATA%\plume` |
+
+`plume --help` prints the resolved paths on your machine.
 
 ## Keymaps
 
@@ -117,6 +146,9 @@ switching genuinely re-skins the editor.
 ```
 src/
 ├── main.rs      terminal setup, panic-safe restore, event loop
+├── cli.rs       command-line parsing (paths, --resume/--new/--help)
+├── paths.rs     platform config/state directories (XDG-aware)
+├── session.rs   per-project session save/restore (tabs, cursors, tree)
 ├── app.rs       central state: buffers, focus, overlays, commands
 ├── buffer.rs    text buffer: edits, undo/redo, selection, movement
 ├── explorer.rs  sidebar file tree (create/rename/delete/reveal)
@@ -125,7 +157,7 @@ src/
 ├── palette.rs   command palette / quick open / fuzzy matcher / input line
 ├── search.rs    project-wide grep + file listing (threaded)
 ├── syntax.rs    hand-rolled per-line highlighter (12 languages)
-├── theme.rs     theme definitions
+├── theme.rs     57 theme definitions
 ├── keys.rs      keyboard + mouse dispatch (keymap-driven)
 └── ui.rs        all rendering
 ```
