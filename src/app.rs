@@ -53,6 +53,7 @@ pub enum CommandId {
     GotoLine,
     ToggleSidebar,
     ToggleTerminal,
+    ToggleMinimap,
     ThemePicker,
     KeymapPicker,
     CommandPalette,
@@ -92,6 +93,7 @@ pub fn command_list() -> Vec<(CommandId, &'static str)> {
         (CommandId::NextTab, "Next Tab"),
         (CommandId::PrevTab, "Previous Tab"),
         (CommandId::ToggleSidebar, "Toggle Sidebar"),
+        (CommandId::ToggleMinimap, "Toggle Minimap"),
         (CommandId::ToggleTerminal, "Toggle Terminal Panel"),
         (CommandId::FocusExplorer, "Focus Explorer"),
         (CommandId::ThemePicker, "Color Theme…"),
@@ -164,6 +166,8 @@ pub struct LayoutInfo {
     pub editor: Rect,
     /// Text area inside the editor block, after the gutter.
     pub text: Rect,
+    /// Minimap column at the right of the editor (empty when disabled).
+    pub minimap: Rect,
     pub panel: Rect,
     pub panel_list: Rect,
     pub status: Rect,
@@ -194,6 +198,10 @@ pub struct App {
     pub layout: LayoutInfo,
     pub tab_hits: Vec<(u16, u16, usize)>,
     pub mouse_sel: bool,
+    /// A minimap scrub drag is in progress.
+    pub mouse_minimap: bool,
+    /// Show the zoomed-out minimap column at the right of the editor.
+    pub minimap: bool,
     /// When true, the next draw scrolls the editor so the cursor is visible.
     pub follow: bool,
     /// Streaming results from the current global-search worker, if any.
@@ -229,6 +237,8 @@ impl App {
             layout: LayoutInfo::default(),
             tab_hits: Vec::new(),
             mouse_sel: false,
+            mouse_minimap: false,
+            minimap: true,
             follow: true,
             search_rx: None,
             search_gen: 0,
@@ -339,6 +349,9 @@ impl App {
         self.keymap = Keymap::preset(id, &self.key_overrides);
         if let Some(name) = cfg.theme {
             self.set_theme_by_name(&name);
+        }
+        if let Some(m) = cfg.minimap {
+            self.minimap = m;
         }
     }
 
@@ -553,6 +566,14 @@ impl App {
             CommandId::GotoLine => self.open_prompt(PromptKind::GotoLine, "Go to line", ""),
             CommandId::ToggleSidebar => self.sidebar = !self.sidebar,
             CommandId::ToggleTerminal => self.toggle_terminal(),
+            CommandId::ToggleMinimap => {
+                self.minimap = !self.minimap;
+                config::set_value("minimap", if self.minimap { "true" } else { "false" });
+                self.notify(
+                    if self.minimap { "Minimap on" } else { "Minimap off" },
+                    Level::Info,
+                );
+            }
             CommandId::ThemePicker => self.open_theme_picker(),
             CommandId::KeymapPicker => self.open_keymap_picker(),
             CommandId::CommandPalette => self.open_command_palette(),

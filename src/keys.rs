@@ -354,6 +354,10 @@ fn handle_mouse_inner(app: &mut App, m: MouseEvent) {
                     app.tree.selected = row;
                     app.explorer_open();
                 }
+            } else if hit(app.layout.minimap, x, y) {
+                app.focus = Focus::Editor;
+                minimap_jump(app, y);
+                app.mouse_minimap = true;
             } else if hit(app.layout.text, x, y) {
                 app.focus = Focus::Editor;
                 click_editor(app, x, y, false);
@@ -374,12 +378,15 @@ fn handle_mouse_inner(app: &mut App, m: MouseEvent) {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if app.mouse_sel && hit(app.layout.text, x, y) {
+            if app.mouse_minimap {
+                minimap_jump(app, y.clamp(app.layout.minimap.y, app.layout.minimap.bottom().saturating_sub(1)));
+            } else if app.mouse_sel && hit(app.layout.text, x, y) {
                 click_editor(app, x, y, true);
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
             app.mouse_sel = false;
+            app.mouse_minimap = false;
         }
         MouseEventKind::ScrollUp => scroll_at(app, x, y, -3),
         MouseEventKind::ScrollDown => scroll_at(app, x, y, 3),
@@ -404,6 +411,29 @@ fn click_editor(app: &mut App, x: u16, y: u16, drag: bool) {
     }
     buf.cursor = (row, col);
     buf.pref_col = vcol;
+}
+
+/// Jump the editor to the source line under a minimap click/drag, centering it.
+fn minimap_jump(app: &mut App, y: u16) {
+    let area = app.layout.minimap;
+    let text_h = app.layout.text.height as usize;
+    let Some(buf) = app.buffers.get_mut(app.active) else {
+        return;
+    };
+    let h = area.height as usize;
+    if h == 0 {
+        return;
+    }
+    let pixels = h * 2;
+    let n = buf.lines.len();
+    let px = ((y.saturating_sub(area.y)) as usize * 2).min(pixels.saturating_sub(1));
+    let line = if n <= pixels { px } else { px * n / pixels };
+    let line = line.min(n.saturating_sub(1));
+    buf.cursor = (line, 0);
+    buf.anchor = None;
+    buf.pref_col = 0;
+    buf.scroll_row = line.saturating_sub(text_h / 2);
+    app.follow = true;
 }
 
 fn scroll_at(app: &mut App, x: u16, y: u16, delta: isize) {

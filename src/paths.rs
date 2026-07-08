@@ -12,6 +12,12 @@ fn home() -> Option<PathBuf> {
     env::var_os("HOME").map(PathBuf::from)
 }
 
+/// `%USERPROFILE%\.config\plume` — a last-resort fallback if the usual Windows
+/// app-data variables are somehow unset.
+fn win_profile_fallback() -> Option<PathBuf> {
+    env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join(".config").join("plume"))
+}
+
 /// Directory for `config.toml` (keymap, theme, keybindings).
 pub fn config_dir() -> Option<PathBuf> {
     if let Some(x) = env::var_os("XDG_CONFIG_HOME") {
@@ -21,7 +27,9 @@ pub fn config_dir() -> Option<PathBuf> {
     }
     match env::consts::OS {
         "macos" => home().map(|h| h.join("Library/Application Support/plume")),
-        "windows" => env::var_os("APPDATA").map(|a| PathBuf::from(a).join("plume")),
+        "windows" => env::var_os("APPDATA")
+            .map(|a| PathBuf::from(a).join("plume"))
+            .or_else(win_profile_fallback),
         _ => home().map(|h| h.join(".config/plume")),
     }
 }
@@ -35,7 +43,9 @@ pub fn state_dir() -> Option<PathBuf> {
     }
     match env::consts::OS {
         "macos" => home().map(|h| h.join("Library/Application Support/plume")),
-        "windows" => env::var_os("LOCALAPPDATA").map(|a| PathBuf::from(a).join("plume")),
+        "windows" => env::var_os("LOCALAPPDATA")
+            .map(|a| PathBuf::from(a).join("plume"))
+            .or_else(win_profile_fallback),
         _ => home().map(|h| h.join(".local/state/plume")),
     }
 }

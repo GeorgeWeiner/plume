@@ -245,13 +245,30 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
         let n = app.buf().map(|b| b.lines.len()).unwrap_or(1);
         n.max(1).to_string().len() as u16 + 2
     };
+
+    // Carve a minimap column off the right edge when enabled and there's room
+    // to keep a usable text area.
+    let mut mm_w: u16 = 0;
+    if app.minimap && inner.width > 70 {
+        let w = (inner.width / 7).clamp(12, 22);
+        if inner.width.saturating_sub(gutter_w + w + 1) >= 40 {
+            mm_w = w;
+        }
+    }
+    let sep_w = if mm_w > 0 { 1 } else { 0 };
     let text_rect = Rect {
         x: inner.x + gutter_w,
         y: inner.y,
-        width: inner.width.saturating_sub(gutter_w),
+        width: inner.width.saturating_sub(gutter_w + mm_w + sep_w),
         height: inner.height,
     };
     app.layout.text = text_rect;
+    let minimap_rect = if mm_w > 0 {
+        Rect { x: inner.x + inner.width - mm_w, y: inner.y, width: mm_w, height: inner.height }
+    } else {
+        Rect::default()
+    };
+    app.layout.minimap = minimap_rect;
 
     let follow = app.follow;
     app.follow = false;
@@ -342,6 +359,123 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
             }
         }
     }
+
+    if minimap_rect.width > 0 {
+        // dim separator between the text and the minimap
+        let sep = Rect { x: minimap_rect.x - 1, y: inner.y, width: 1, height: inner.height };
+        let sep_lines: Vec<Line> = (0..inner.height)
+            .map(|_| Line::from(Span::styled("│", Style::default().fg(t.border).bg(t.bg))))
+            .collect();
+        f.render_widget(Paragraph::new(sep_lines), sep);
+        draw_minimap(f, t, buf, minimap_rect, text_rect.height);
+    }
+}
+
+// ---- minimap ----
+
+fn rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (128, 128, 128),
+    }
+}
+
+/// Linear blend: t=0 → a, t=1 → b.
+fn blend(a: Color, b: Color, t: f32) -> Color {
+    let (ar, ag, ab) = rgb(a);
+    let (br, bg, bb) = rgb(b);
+    let m = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t).round() as u8;
+    Color::Rgb(m(ar, br), m(ag, bg), m(ab, bb))
+}
+
+fn token_color_at(t: &Theme, ranges: &[(usize, usize, syntax::Tok)], col: usize) -> Option<Color> {
+    ranges
+        .iter()
+        .find(|(s, e, _)| col >= *s && col < *e)
+        .map(|(_, _, tok)| t.tok(*tok))
+}
+
+/// Zoomed-out overview of the whole file. Each terminal row packs two source
+/// "pixel" rows via the upper-half-block glyph (fg = top, bg = bottom), and
+/// each column samples a small span of source columns so indentation and code
+/// shape show through. Sampling is bounded by the panel size, so cost is
+/// independent of file length.
+fn draw_minimap(f: &mut Frame, t: &Theme, buf: &Buffer, area: Rect, text_h: u16) {
+    let (w, h) = (area.width as usize, area.height as usize);
+    if w == 0 || h == 0 {
+        return;
+    }
+    const S: usize = 2; // source columns per minimap cell
+    let pixels = h * 2;
+    let n = buf.lines.len();
+    let scan_cap = w * S;
+
+    let line_at = |px: usize| -> Option<usize> {
+        if n == 0 {
+            return None;
+        }
+        let idx = if n <= pixels { px } else { px * n / pixels };
+        (idx < n).then_some(idx)
+    };
+    let px_at = |line: usize| -> usize {
+        if n <= pixels {
+            line
+        } else {
+            line * pixels / n
+        }
+    };
+    let band_top = px_at(buf.scroll_row);
+    let band_bot = px_at((buf.scroll_row + text_h as usize).min(n)).max(band_top + 1);
+
+    // Precompute a color (or none) for every pixel/column.
+    let mut grid: Vec<Vec<Option<Color>>> = Vec::with_capacity(pixels);
+    for px in 0..pixels {
+        let mut row = vec![None; w];
+        if let Some(li) = line_at(px) {
+            let clipped: String = buf.line(li).chars().take(scan_cap).collect();
+            let in_block = buf.line_states.get(li).copied().unwrap_or(false);
+            let ranges = syntax::scan_line(buf.language, &clipped, in_block).0;
+            let chars: Vec<char> = clipped.chars().collect();
+            for (c, slot) in row.iter_mut().enumerate() {
+                for sc in c * S..c * S + S {
+                    if sc < chars.len() && !chars[sc].is_whitespace() {
+                        *slot = Some(token_color_at(t, &ranges, sc).unwrap_or(t.fg));
+                        break;
+                    }
+                }
+            }
+        }
+        grid.push(row);
+    }
+
+    let band_tint = blend(t.accent, t.bg, 0.80);
+    let shade = |px: usize, c: usize| -> Color {
+        let in_band = px >= band_top && px < band_bot;
+        match grid[px][c] {
+            Some(col) => blend(col, t.bg, if in_band { 0.15 } else { 0.5 }),
+            None => {
+                if in_band {
+                    band_tint
+                } else {
+                    t.bg
+                }
+            }
+        }
+    };
+
+    let mut lines: Vec<Line> = Vec::with_capacity(h);
+    for ty in 0..h {
+        let (top, bot) = (ty * 2, ty * 2 + 1);
+        let mut spans: Vec<Span> = Vec::with_capacity(w);
+        for c in 0..w {
+            spans.push(Span::styled(
+                "▀",
+                Style::default().fg(shade(top, c)).bg(shade(bot, c)),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -943,5 +1077,61 @@ fn draw_overlay(f: &mut Frame, app: &App, t: &Theme) {
             f.render_widget(Paragraph::new(lines), inner);
             f.set_cursor_position((inner.x + 2 + p.input.cursor as u16, inner.y));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::path::PathBuf;
+
+    fn app_with_lines(n: usize) -> App {
+        let mut app = App::new(PathBuf::from("."));
+        app.open_untitled();
+        {
+            let b = app.buf_mut().unwrap();
+            b.lines = (0..n).map(|i| format!("    let value_{i} = compute({i});")).collect();
+            b.recompute_states();
+        }
+        app
+    }
+
+    fn half_block_count(term: &Terminal<TestBackend>) -> usize {
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|c| c.symbol() == "▀")
+            .count()
+    }
+
+    #[test]
+    fn minimap_renders_and_toggles() {
+        let mut app = app_with_lines(200);
+        let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+
+        app.minimap = true;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(app.layout.minimap.width > 0, "minimap column should be carved out");
+        let on = half_block_count(&term);
+        assert!(on > 20, "minimap should render half-block glyphs, got {on}");
+
+        app.minimap = false;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.layout.minimap.width, 0, "minimap rect cleared when off");
+        assert_eq!(half_block_count(&term), 0, "no minimap glyphs when disabled");
+    }
+
+    #[test]
+    fn minimap_hidden_on_narrow_terminals() {
+        let mut app = app_with_lines(200);
+        app.minimap = true;
+        let mut term = Terminal::new(TestBackend::new(60, 24)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.layout.minimap.width, 0, "no minimap when there isn't room");
+        assert_eq!(half_block_count(&term), 0);
     }
 }
