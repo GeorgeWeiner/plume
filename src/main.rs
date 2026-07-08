@@ -26,7 +26,7 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
-    LeaveAlternateScreen,
+    LeaveAlternateScreen, SetTitle,
 };
 use ratatui::Terminal;
 
@@ -76,7 +76,19 @@ fn tui(inv: cli::Invocation) -> io::Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    // Name the window/tab after the project so it reads e.g. "plume — demo".
+    let title = inv
+        .root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "plume".into());
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste,
+        SetTitle(format!("plume — {title}"))
+    )?;
     // Kitty keyboard protocol (when supported) disambiguates e.g.
     // Ctrl+Shift+F from Ctrl+F.
     let kitty = supports_keyboard_enhancement().unwrap_or(false);
