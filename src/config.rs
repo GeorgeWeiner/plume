@@ -13,7 +13,16 @@ use crate::paths::config_file;
 pub struct Config {
     pub keymap: Option<String>,
     pub theme: Option<String>,
+    pub minimap: Option<bool>,
     pub overrides: Vec<(CommandId, Vec<Chord>)>,
+}
+
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "on" | "yes" => Some(true),
+        "false" | "0" | "off" | "no" => Some(false),
+        _ => None,
+    }
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -63,6 +72,7 @@ pub fn load() -> Config {
             "" => match key.as_str() {
                 "keymap" => cfg.keymap = Some(val.to_ascii_lowercase()),
                 "theme" => cfg.theme = Some(val),
+                "minimap" => cfg.minimap = parse_bool(&val),
                 _ => {}
             },
             "keybindings" | "keys" => {
@@ -144,6 +154,9 @@ pub fn write_template(seed: Option<(&str, &str)>) {
          # Dracula, Gruvbox, Tokyo Night, Catppuccin, Solarized, …) with the\n\
          # in-app picker: Ctrl+K Ctrl+T.\n\
          theme = \"{theme_val}\"\n\
+         \n\
+         # Show the zoomed-out minimap on the right (toggle in-app with F9):\n\
+         minimap = true\n\
          \n\
          # Override individual keybindings. Format:  action = \"chord\"\n\
          # A chord is like  ctrl+shift+p  /  f3  /  ctrl+slash  and a two-key\n\

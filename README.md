@@ -88,12 +88,25 @@ a popup / find bar / panel or clear the selection. Two-key sequences (like
 `Ctrl+K Ctrl+T` for the theme picker) show a pending indicator in the status bar
 after the first chord.
 
+Also universal: **`F9`** toggles the minimap.
+
 **In the file tree** (`Ctrl+E` to focus): `↑↓`/`jk` move, `↵` open/toggle,
 `←→`/`hl` collapse/expand, `a`/`n` new file, `A` new folder, `r`/`F2` rename,
 `d`/`Del` delete (confirm with `y`), `R` refresh.
 
 The palette also exposes **Extract Variable**: select a single-line expression
 and it hoists it into a `let extracted = …;` above the line.
+
+## Minimap
+
+A Sublime-style zoomed-out overview of the whole file runs down the right edge,
+with the current viewport shown as a faint accent-tinted band. It uses
+half-block glyphs for double vertical resolution and colors the overview by
+syntax, so indentation and code structure are visible at a glance. Click or
+drag on it to scrub through the file. Toggle it with **`F9`** (or the command
+palette → *Toggle Minimap*); the choice is saved to your config (`minimap =
+true`). It hides itself automatically on terminals too narrow to spare the
+room, and its cost is bounded by the panel size — no slowdown on huge files.
 
 ## Configuration
 
