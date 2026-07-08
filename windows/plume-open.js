@@ -6,10 +6,22 @@
 var sh = new ActiveXObject("WScript.Shell");
 var fso = new ActiveXObject("Scripting.FileSystemObject");
 
-var here = fso.GetParentFolderName(WScript.ScriptFullName);
-var exe = fso.BuildPath(here, "plume.exe");
-
 function quote(s) { return '"' + s + '"'; }
+
+// Find plume.exe next to this script (self-contained install), else anywhere on
+// PATH (a cargo-installed binary in ~/.cargo/bin).
+function resolveExe() {
+    var here = fso.GetParentFolderName(WScript.ScriptFullName);
+    var local = fso.BuildPath(here, "plume.exe");
+    if (fso.FileExists(local)) return local;
+    var dirs = sh.ExpandEnvironmentStrings("%PATH%").split(";");
+    for (var i = 0; i < dirs.length; i++) {
+        if (dirs[i].length === 0) continue;
+        var cand = fso.BuildPath(dirs[i], "plume.exe");
+        if (fso.FileExists(cand)) return cand;
+    }
+    return "plume.exe"; // last resort, let the shell resolve it
+}
 
 // Turn the incoming path into plume arguments. A file roots plume at its parent
 // folder so the tree shows its siblings, and a folder opens directly.
@@ -22,6 +34,8 @@ if (arg === "-r" || arg === "") {
 } else {
     plumeArgs = quote(arg);
 }
+
+var exe = resolveExe();
 
 // Prefer Windows Terminal when it is installed, otherwise the console host.
 var wt = fso.BuildPath(sh.ExpandEnvironmentStrings("%LOCALAPPDATA%"),

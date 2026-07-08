@@ -1,23 +1,22 @@
 <#
-    Removes everything install.ps1 added - context menus, shortcuts, the PATH
-    entry, and the installed binary. Pass -Purge to also delete your saved
-    config and sessions.
+    Removes everything install.ps1 added - context menus, shortcuts, the
+    launcher, and the cargo-installed binary. The ~/.cargo/bin PATH entry is
+    left alone, since that is shared Rust infrastructure. Pass -Purge to also
+    delete your config and sessions.
 #>
 #Requires -Version 5.1
 [CmdletBinding()]
 param([switch]$Purge)
 
 $ErrorActionPreference = 'Stop'
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\plume'
+$SupportDir = Join-Path $env:LOCALAPPDATA 'Programs\plume'
 
 function Info($m) { Write-Host "  $m" }
 function Step($m) { Write-Host "`n$m" -ForegroundColor Cyan }
 
 Step 'Removing context menus'
 foreach ($sub in @('Directory', 'Directory\Background', '*')) {
-    try {
-        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree("Software\Classes\$sub\shell\plume", $false)
-    } catch {}
+    try { [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree("Software\Classes\$sub\shell\plume", $false) } catch {}
 }
 Info 'Done.'
 
@@ -28,17 +27,19 @@ Step 'Removing shortcuts'
 ) | ForEach-Object { if (Test-Path $_) { Remove-Item $_ -Force } }
 Info 'Done.'
 
-Step 'Removing PATH entry'
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($userPath) {
-    $parts = @($userPath -split ';' | Where-Object { $_ -ne '' -and $_ -ne $InstallDir })
-    [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User')
-}
+Step 'Removing launcher'
+if (Test-Path $SupportDir) { Remove-Item $SupportDir -Recurse -Force }
 Info 'Done.'
 
-Step "Removing $InstallDir"
-if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
-Info 'Done.'
+Step 'Uninstalling the binary'
+$cargo = Get-Command cargo -ErrorAction SilentlyContinue
+if ($cargo) {
+    & cargo uninstall plume
+    if ($LASTEXITCODE -eq 0) { Info 'Removed via cargo uninstall.' }
+    else { Info 'Not a cargo-installed binary or already gone - nothing to do.' }
+} else {
+    Info 'cargo not found - remove plume.exe by hand if you copied it somewhere.'
+}
 
 if ($Purge) {
     Step 'Purging config and sessions'
@@ -50,4 +51,4 @@ if ($Purge) {
 }
 
 Step 'Done.'
-Write-Host 'plume has been uninstalled. Open a new terminal for the PATH change to take effect.'
+Write-Host 'plume has been uninstalled.'

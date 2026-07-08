@@ -1,18 +1,20 @@
 <#
     plume Windows installer.
 
-    Installs the built binary to %LOCALAPPDATA%\Programs\plume, adds it to the
-    user PATH, creates Start-menu and desktop shortcuts, and registers the
-    Explorer "Open in plume" / "Edit with plume" context menus. Every change is
-    per-user (no admin needed) and is undone by uninstall.ps1.
+    Installs plume with cargo (into ~/.cargo/bin, the standard Rust location
+    that is already on your PATH), then layers on the Windows extras - Start-menu
+    and desktop shortcuts plus the Explorer "Open in plume" / "Edit with plume"
+    context menus. Everything is per-user (no admin) and is undone by
+    uninstall.ps1.
 
-    Switches opt out of individual pieces.
+    If plume is already on your PATH (e.g. you ran cargo install yourself) the
+    binary step is skipped and that copy is reused. Use -Reinstall to rebuild
+    from this source tree.
 #>
 #Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [switch]$NoBuild,
-    [switch]$NoPath,
+    [switch]$Reinstall,
     [switch]$NoShortcuts,
     [switch]$NoContextMenu
 )
@@ -21,53 +23,52 @@ $ErrorActionPreference = 'Stop'
 
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot   = Split-Path -Parent $ScriptDir
-$InstallDir = Join-Path $env:LOCALAPPDATA 'Programs\plume'
-$Exe        = Join-Path $InstallDir 'plume.exe'
-$Launcher   = Join-Path $InstallDir 'plume-open.js'
+$SupportDir = Join-Path $env:LOCALAPPDATA 'Programs\plume'
+$Launcher   = Join-Path $SupportDir 'plume-open.js'
 $Wscript    = Join-Path $env:SystemRoot 'System32\wscript.exe'
 
 function Info($m) { Write-Host "  $m" }
 function Step($m) { Write-Host "`n$m" -ForegroundColor Cyan }
 
-# 1. Build the release binary, unless told to reuse an existing one.
-Step 'Building release binary'
-if ($NoBuild) {
-    Info 'Skipped (-NoBuild).'
+# 1. Install the binary with cargo, or reuse one already on PATH.
+Step 'Installing the binary'
+$existing = Get-Command plume.exe -ErrorAction SilentlyContinue
+if ($existing -and -not $Reinstall) {
+    $Exe = $existing.Source
+    Info "Reusing the plume already on your PATH: $Exe"
+    Info 'Pass -Reinstall to rebuild it from this source tree.'
 } else {
+    $cargoBin = if ($env:CARGO_HOME) { Join-Path $env:CARGO_HOME 'bin' }
+                else { Join-Path $env:USERPROFILE '.cargo\bin' }
+    $env:CARGO_TARGET_DIR = Join-Path $RepoRoot 'target'   # reuse existing build artifacts
     Push-Location $RepoRoot
-    try { & cargo build --release } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) { throw 'cargo build failed.' }
-}
-$BuiltExe = Join-Path $RepoRoot 'target\release\plume.exe'
-if (-not (Test-Path $BuiltExe)) {
-    throw "Binary not found at $BuiltExe. Build first with: cargo build --release"
+    try { & cargo install --path . --force } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw 'cargo install failed.' }
+    $Exe = Join-Path $cargoBin 'plume.exe'
+    if (-not (Test-Path $Exe)) { throw "cargo did not produce $Exe" }
+    Info "Installed to $Exe"
 }
 
-# 2. Copy the binary and launcher into place.
-Step "Installing to $InstallDir"
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item $BuiltExe $Exe -Force
-Copy-Item (Join-Path $ScriptDir 'plume-open.js') $Launcher -Force
-Info 'Copied plume.exe and plume-open.js.'
-
-# 3. Add the install dir to the user PATH.
-Step 'Updating PATH'
-if ($NoPath) {
-    Info 'Skipped (-NoPath).'
+# 2. Make sure the binary's folder is on the user PATH (cargo's usually is).
+Step 'Checking PATH'
+$ExeDir = Split-Path -Parent $Exe
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$parts = @()
+if ($userPath) { $parts = @($userPath -split ';' | Where-Object { $_ -ne '' }) }
+if ($parts -contains $ExeDir) {
+    Info "Already on PATH ($ExeDir)."
 } else {
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $parts = @()
-    if ($userPath) { $parts = @($userPath -split ';' | Where-Object { $_ -ne '' }) }
-    if ($parts -contains $InstallDir) {
-        Info 'Already on PATH.'
-    } else {
-        $newPath = (@($parts) + $InstallDir) -join ';'
-        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-        Info "Added to your user PATH. Open a new terminal to run 'plume'."
-    }
+    [Environment]::SetEnvironmentVariable('Path', ((@($parts) + $ExeDir) -join ';'), 'User')
+    Info "Added $ExeDir. Open a new terminal to run 'plume'."
 }
 
-# 4. Shortcuts (Start menu + desktop), launched via the flash-free helper.
+# 3. Install the flash-free launcher the shortcuts and menus call.
+Step 'Installing launcher'
+New-Item -ItemType Directory -Force -Path $SupportDir | Out-Null
+Copy-Item (Join-Path $ScriptDir 'plume-open.js') $Launcher -Force
+Info "Copied plume-open.js to $SupportDir."
+
+# 4. Shortcuts (Start menu + desktop).
 Step 'Creating shortcuts'
 if ($NoShortcuts) {
     Info 'Skipped (-NoShortcuts).'
