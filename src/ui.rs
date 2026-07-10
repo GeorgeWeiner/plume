@@ -43,7 +43,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let mut editor_area = cols[1];
     let panel_h: u16 = match &app.panel {
         Panel::None => 0,
-        Panel::Terminal => 7,
+        // A real shell wants room; take roughly a third of the editor height.
+        Panel::Terminal => (editor_area.height / 3).clamp(8, 20),
         Panel::Search(p) => (p.matches.len() as u16 + 2).clamp(5, 12),
     };
     if panel_h > 0 && editor_area.height > panel_h + 3 {
@@ -395,53 +396,72 @@ fn token_color_at(t: &Theme, ranges: &[(usize, usize, syntax::Tok)], col: usize)
         .map(|(_, _, tok)| t.tok(*tok))
 }
 
-/// Zoomed-out overview of the whole file. Each terminal row packs two source
-/// "pixel" rows via the upper-half-block glyph (fg = top, bg = bottom), and
-/// each column samples a small span of source columns so indentation and code
-/// shape show through. Sampling is bounded by the panel size, so cost is
-/// independent of file length.
+/// Dominant (most frequent) color in a slice, ties broken by first seen.
+/// Returns `None` for an all-empty slice.
+fn dominant_color(px: &[Option<Color>]) -> Option<Color> {
+    let mut best: Option<(Color, usize)> = None;
+    for (i, &c) in px.iter().enumerate() {
+        let Some(c) = c else { continue };
+        let count = px[i..].iter().filter(|o| **o == Some(c)).count();
+        if best.is_none_or(|(_, n)| count > n) {
+            best = Some((c, count));
+        }
+    }
+    best.map(|(c, _)| c)
+}
+
+/// Braille dot bit for sub-cell (row 0..4, col 0..2), offset from U+2800.
+/// Layout is the standard 2×4 matrix: dots 1-3,7 down the left, 4-6,8 the right.
+const BRAILLE: [[u8; 2]; 4] = [
+    [0x01, 0x08],
+    [0x02, 0x10],
+    [0x04, 0x20],
+    [0x40, 0x80],
+];
+
+/// Zoomed-out overview of the whole file. Each terminal cell is a Braille glyph
+/// packing a 2×4 grid of source "pixels" (2 columns × 4 rows), so the map has
+/// double the resolution of a half-block rendering in both axes. Each pixel
+/// samples one source column; the cell is tinted by its dominant syntax color.
+/// Sampling is bounded by the panel size, so cost is independent of file length.
 fn draw_minimap(f: &mut Frame, t: &Theme, buf: &Buffer, area: Rect, text_h: u16) {
     let (w, h) = (area.width as usize, area.height as usize);
     if w == 0 || h == 0 {
         return;
     }
-    const S: usize = 2; // source columns per minimap cell
-    let pixels = h * 2;
+    // Sub-pixel grid: 2 columns and 4 rows per terminal cell.
+    let px_w = w * 2;
+    let px_h = h * 4;
     let n = buf.lines.len();
-    let scan_cap = w * S;
 
     let line_at = |px: usize| -> Option<usize> {
         if n == 0 {
             return None;
         }
-        let idx = if n <= pixels { px } else { px * n / pixels };
+        let idx = if n <= px_h { px } else { px * n / px_h };
         (idx < n).then_some(idx)
     };
     let px_at = |line: usize| -> usize {
-        if n <= pixels {
+        if n <= px_h {
             line
         } else {
-            line * pixels / n
+            line * px_h / n
         }
     };
     let band_top = px_at(buf.scroll_row);
     let band_bot = px_at((buf.scroll_row + text_h as usize).min(n)).max(band_top + 1);
 
-    // Precompute a color (or none) for every pixel/column.
-    let mut grid: Vec<Vec<Option<Color>>> = Vec::with_capacity(pixels);
-    for px in 0..pixels {
-        let mut row = vec![None; w];
+    // Precompute a color (or none) for every sub-pixel: one source column each.
+    let mut grid: Vec<Vec<Option<Color>>> = Vec::with_capacity(px_h);
+    for px in 0..px_h {
+        let mut row = vec![None; px_w];
         if let Some(li) = line_at(px) {
-            let clipped: String = buf.line(li).chars().take(scan_cap).collect();
+            let clipped: String = buf.line(li).chars().take(px_w).collect();
             let in_block = buf.line_states.get(li).copied().unwrap_or(false);
             let ranges = syntax::scan_line(buf.language, &clipped, in_block).0;
-            let chars: Vec<char> = clipped.chars().collect();
-            for (c, slot) in row.iter_mut().enumerate() {
-                for sc in c * S..c * S + S {
-                    if sc < chars.len() && !chars[sc].is_whitespace() {
-                        *slot = Some(token_color_at(t, &ranges, sc).unwrap_or(t.fg));
-                        break;
-                    }
+            for (sc, ch) in clipped.chars().enumerate() {
+                if !ch.is_whitespace() {
+                    row[sc] = Some(token_color_at(t, &ranges, sc).unwrap_or(t.fg));
                 }
             }
         }
@@ -449,29 +469,35 @@ fn draw_minimap(f: &mut Frame, t: &Theme, buf: &Buffer, area: Rect, text_h: u16)
     }
 
     let band_tint = blend(t.accent, t.bg, 0.80);
-    let shade = |px: usize, c: usize| -> Color {
-        let in_band = px >= band_top && px < band_bot;
-        match grid[px][c] {
-            Some(col) => blend(col, t.bg, if in_band { 0.15 } else { 0.5 }),
-            None => {
-                if in_band {
-                    band_tint
-                } else {
-                    t.bg
-                }
-            }
-        }
-    };
-
     let mut lines: Vec<Line> = Vec::with_capacity(h);
     for ty in 0..h {
-        let (top, bot) = (ty * 2, ty * 2 + 1);
         let mut spans: Vec<Span> = Vec::with_capacity(w);
-        for c in 0..w {
-            spans.push(Span::styled(
-                "▀",
-                Style::default().fg(shade(top, c)).bg(shade(bot, c)),
-            ));
+        for cx in 0..w {
+            // Assemble the 2×4 dot pattern and collect lit colors for the cell.
+            let mut pattern: u8 = 0;
+            let mut lit: [Option<Color>; 8] = [None; 8];
+            let mut k = 0;
+            let mut in_band = false;
+            for (ry, dots) in BRAILLE.iter().enumerate() {
+                let py = ty * 4 + ry;
+                in_band |= py >= band_top && py < band_bot;
+                for (rx, &bit) in dots.iter().enumerate() {
+                    if let Some(col) = grid[py][cx * 2 + rx] {
+                        pattern |= bit;
+                        lit[k] = Some(col);
+                        k += 1;
+                    }
+                }
+            }
+            let bg = if in_band { band_tint } else { t.bg };
+            match dominant_color(&lit[..k]) {
+                Some(col) => {
+                    let fg = blend(col, t.bg, if in_band { 0.10 } else { 0.35 });
+                    let ch = char::from_u32(0x2800 + pattern as u32).unwrap_or(' ');
+                    spans.push(Span::styled(ch.to_string(), Style::default().fg(fg).bg(bg)));
+                }
+                None => spans.push(Span::styled(" ", Style::default().bg(bg))),
+            }
         }
         lines.push(Line::from(spans));
     }
@@ -654,6 +680,15 @@ fn draw_panel(f: &mut Frame, app: &mut App, t: &Theme) {
     match &mut app.panel {
         Panel::None => {}
         Panel::Terminal => {
+            let dead = app.terminal.as_ref().is_some_and(|term| term.is_dead());
+            let scrollback = app.terminal.as_ref().map_or(0, |term| term.scrollback());
+            let hint: String = if dead {
+                " ↵ restart · Ctrl+` close ".into()
+            } else if scrollback > 0 {
+                format!(" ▲ {scrollback} · Shift+PgDn to bottom ")
+            } else {
+                " Ctrl+` hide · Shift+PgUp scroll ".into()
+            };
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -662,29 +697,44 @@ fn draw_panel(f: &mut Frame, app: &mut App, t: &Theme) {
                     " TERMINAL ",
                     Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
                 )]))
-                .style(Style::default().bg(t.panel_bg));
+                .title(
+                    Line::from(Span::styled(hint, Style::default().fg(t.dim))).right_aligned(),
+                )
+                .style(Style::default().bg(t.bg));
             let inner = block.inner(area);
             f.render_widget(block, area);
             app.layout.panel_list = inner;
-            let lines = vec![
-                Line::from(Span::styled(
-                    " plume does not embed a real shell — this panel is a placeholder.",
-                    Style::default().fg(t.dim),
-                )),
-                Line::from(Span::styled(
-                    " A future version would spawn a PTY here.",
-                    Style::default().fg(t.dim),
-                )),
-                Line::from(vec![
-                    Span::styled(" $ ", Style::default().fg(t.green).add_modifier(Modifier::BOLD)),
-                    Span::styled("▍", Style::default().fg(t.fg)),
-                ]),
-                Line::from(Span::styled(
-                    " press q or Ctrl+` to close",
-                    Style::default().fg(t.dim).add_modifier(Modifier::ITALIC),
-                )),
-            ];
-            f.render_widget(Paragraph::new(lines), inner);
+            if inner.width == 0 || inner.height == 0 {
+                return;
+            }
+
+            match app.terminal.as_mut() {
+                Some(term) => {
+                    // Keep the shell's view matched to the panel's inner area.
+                    term.resize(inner.height, inner.width);
+                    // Hide the cursor while scrolled back — it's not the live view.
+                    let show_cursor = focused && !term.is_dead() && scrollback == 0;
+                    let guard = term.parser();
+                    let mut lines = render_terminal(guard.screen(), t, show_cursor);
+                    drop(guard);
+                    if dead {
+                        lines.push(Line::from(Span::styled(
+                            "[process exited]",
+                            Style::default().fg(t.dim).add_modifier(Modifier::ITALIC),
+                        )));
+                    }
+                    f.render_widget(Paragraph::new(lines), inner);
+                }
+                None => {
+                    f.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            " Could not start a shell here.",
+                            Style::default().fg(t.red),
+                        ))),
+                        inner,
+                    );
+                }
+            }
         }
         Panel::Search(pane) => {
             let title = if pane.done {
@@ -770,6 +820,88 @@ fn draw_panel(f: &mut Frame, app: &mut App, t: &Theme) {
             }
             f.render_widget(Paragraph::new(lines), inner);
         }
+    }
+}
+
+/// Turn a vt100 screen grid into styled lines, one span per cell. When
+/// `show_cursor` is set, the cell under the cursor gets a block highlight.
+fn render_terminal(screen: &vt100::Screen, t: &Theme, show_cursor: bool) -> Vec<Line<'static>> {
+    let (rows, cols) = screen.size();
+    let (cur_row, cur_col) = screen.cursor_position();
+    let cursor_on = show_cursor && !screen.hide_cursor();
+
+    let mut lines = Vec::with_capacity(rows as usize);
+    for row in 0..rows {
+        let mut spans: Vec<Span> = Vec::with_capacity(cols as usize);
+        let mut col = 0u16;
+        while col < cols {
+            let cell = screen.cell(row, col);
+            let wide = cell.map(|c| c.is_wide()).unwrap_or(false);
+            let text = match cell {
+                Some(c) if c.has_contents() => c.contents().to_string(),
+                _ => " ".to_string(),
+            };
+            let mut style = cell.map(|c| cell_style(c, t)).unwrap_or_default();
+            if cursor_on && row == cur_row && col == cur_col {
+                style = style.bg(t.accent).fg(t.bg).add_modifier(Modifier::BOLD);
+            }
+            spans.push(Span::styled(text, style));
+            col += if wide { 2 } else { 1 };
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+fn cell_style(cell: &vt100::Cell, t: &Theme) -> Style {
+    let mut fg = conv_color(cell.fgcolor(), t, true);
+    let mut bg = conv_color(cell.bgcolor(), t, false);
+    if cell.inverse() {
+        std::mem::swap(&mut fg, &mut bg);
+    }
+    let mut m = Modifier::empty();
+    if cell.bold() {
+        m |= Modifier::BOLD;
+    }
+    if cell.italic() {
+        m |= Modifier::ITALIC;
+    }
+    if cell.underline() {
+        m |= Modifier::UNDERLINED;
+    }
+    Style::default().fg(fg).bg(bg).add_modifier(m)
+}
+
+fn conv_color(c: vt100::Color, t: &Theme, fg: bool) -> Color {
+    match c {
+        vt100::Color::Default => {
+            if fg {
+                t.fg
+            } else {
+                t.bg
+            }
+        }
+        vt100::Color::Idx(i) => ansi_color(i, t),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// Map the 16 ANSI colors onto the active theme so the shell blends in; leave
+/// the 6×6×6 cube and grayscale (16–255) to the host terminal's own palette.
+fn ansi_color(i: u8, t: &Theme) -> Color {
+    match i {
+        0 => t.bg,      // black
+        1 | 9 => t.red,
+        2 | 10 => t.green,
+        3 => t.yellow,
+        11 => t.orange, // bright yellow
+        4 | 12 => t.accent,
+        5 | 13 => t.magenta,
+        6 | 14 => t.cyan,
+        7 => t.fg,      // white
+        8 => t.dim,     // bright black
+        15 => t.fg,     // bright white
+        _ => Color::Indexed(i),
     }
 }
 
@@ -1099,12 +1231,18 @@ mod tests {
         app
     }
 
-    fn half_block_count(term: &Terminal<TestBackend>) -> usize {
+    /// Count Braille glyphs (U+2800..U+28FF) rendered in the buffer.
+    fn braille_count(term: &Terminal<TestBackend>) -> usize {
         term.backend()
             .buffer()
             .content()
             .iter()
-            .filter(|c| c.symbol() == "▀")
+            .filter(|c| {
+                c.symbol()
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ('\u{2800}'..='\u{28FF}').contains(&ch))
+            })
             .count()
     }
 
@@ -1116,13 +1254,13 @@ mod tests {
         app.minimap = true;
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert!(app.layout.minimap.width > 0, "minimap column should be carved out");
-        let on = half_block_count(&term);
-        assert!(on > 20, "minimap should render half-block glyphs, got {on}");
+        let on = braille_count(&term);
+        assert!(on > 20, "minimap should render Braille glyphs, got {on}");
 
         app.minimap = false;
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.layout.minimap.width, 0, "minimap rect cleared when off");
-        assert_eq!(half_block_count(&term), 0, "no minimap glyphs when disabled");
+        assert_eq!(braille_count(&term), 0, "no minimap glyphs when disabled");
     }
 
     #[test]
@@ -1132,6 +1270,6 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(60, 24)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.layout.minimap.width, 0, "no minimap when there isn't room");
-        assert_eq!(half_block_count(&term), 0);
+        assert_eq!(braille_count(&term), 0);
     }
 }

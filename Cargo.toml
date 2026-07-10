@@ -6,7 +6,9 @@ description = "Plume — a feather-light terminal IDE prototype"
 license = "MIT"
 
 [dependencies]
-ratatui = "0.29"
+portable-pty = "0.9.0"
+ratatui = "0.30"
+vt100 = "0.16"
 
 [profile.release]
 lto = true

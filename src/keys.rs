@@ -5,9 +5,10 @@ use ratatui::crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use crate::app::{App, Focus, Overlay, Panel};
+use crate::app::{App, CommandId, Focus, Overlay, Panel};
 use crate::buffer::col_at_visual;
 use crate::keymap;
+use crate::pty;
 
 fn hit(r: Rect, x: u16, y: u16) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
@@ -23,6 +24,45 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn handle_key_inner(app: &mut App, key: KeyEvent) {
+    // A focused terminal panel grabs the keyboard: every keystroke (Esc, arrows,
+    // Ctrl+C, …) is forwarded to the shell. Only the toggle-terminal chord is
+    // reserved, so there's always a way back out. Overlays and the find bar,
+    // which float above everything, still take precedence.
+    if app.focus == Focus::Panel
+        && matches!(app.panel, Panel::Terminal)
+        && app.terminal.is_some()
+        && app.overlay.is_none()
+        && !(app.find_typing && app.find.is_some())
+    {
+        if let Some(c) = keymap::normalize(&key) {
+            if app.keymap.lookup_single(&c) == Some(CommandId::ToggleTerminal) {
+                app.execute(CommandId::ToggleTerminal);
+                return;
+            }
+        }
+        // Shift+PageUp/PageDown scroll the scrollback rather than reaching the
+        // shell (the terminal's own binding, so plain PageUp still works in apps).
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+        {
+            let page = app.layout.panel_list.height.saturating_sub(1).max(1) as isize;
+            let dir = if key.code == KeyCode::PageUp { page } else { -page };
+            app.terminal_scroll(dir);
+            return;
+        }
+        if app.terminal_live() {
+            if let Some(bytes) = pty::key_to_bytes(&key) {
+                // Typing jumps back to the live view, like a real terminal.
+                app.terminal_scroll_to_bottom();
+                app.terminal_input(&bytes);
+            }
+        } else if key.code == KeyCode::Enter {
+            // Shell exited: Enter restarts it.
+            app.restart_terminal();
+        }
+        return;
+    }
+
     // Escape is universal: abort a pending chord, then close/clear context.
     if key.code == KeyCode::Esc {
         app.pending_chord = None;
@@ -364,6 +404,9 @@ fn handle_mouse_inner(app: &mut App, m: MouseEvent) {
                 app.mouse_sel = true;
             } else if hit(app.layout.panel_list, x, y) {
                 let mut open = false;
+                if matches!(app.panel, Panel::Terminal) {
+                    app.focus = Focus::Panel;
+                }
                 if let Panel::Search(pane) = &mut app.panel {
                     app.focus = Focus::Panel;
                     let row = (y - app.layout.panel_list.y) as usize + pane.scroll;
@@ -440,7 +483,10 @@ fn scroll_at(app: &mut App, x: u16, y: u16, delta: isize) {
     if app.sidebar && hit(app.layout.sidebar, x, y) {
         app.tree.move_sel(delta.signum() * 2);
     } else if hit(app.layout.panel, x, y) {
-        if let Panel::Search(pane) = &mut app.panel {
+        if matches!(app.panel, Panel::Terminal) {
+            // Wheel up (delta < 0) scrolls back into history.
+            app.terminal_scroll(-delta.signum() * 3);
+        } else if let Panel::Search(pane) = &mut app.panel {
             let n = pane.matches.len();
             if n > 0 {
                 let cur = pane.selected as isize + delta.signum() * 2;
@@ -451,6 +497,53 @@ fn scroll_at(app: &mut App, x: u16, y: u16, delta: isize) {
         let max = buf.lines.len().saturating_sub(1);
         let cur = buf.scroll_row as isize + delta;
         buf.scroll_row = cur.clamp(0, max as isize) as usize;
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+    use crate::app::{App, Focus, Panel};
+    use ratatui::crossterm::event::KeyModifiers;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    fn ch(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn opening_terminal_routes_typed_command_to_shell() {
+        let mut app = App::new(PathBuf::from("."));
+        // Toggling opens the panel, spawns the shell, and focuses the panel.
+        app.toggle_terminal();
+        assert!(matches!(app.panel, Panel::Terminal));
+        assert!(app.focus == Focus::Panel);
+        assert!(app.terminal.is_some(), "shell should have spawned");
+
+        // Type a command through the real key handler; it should reach the PTY.
+        for c in "echo plumeruns".chars() {
+            handle_key(&mut app, ch(c));
+        }
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut seen = String::new();
+        while Instant::now() < deadline {
+            seen = app.terminal.as_ref().unwrap().parser().screen().contents();
+            if seen.contains("plumeruns") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(seen.contains("plumeruns"), "command output missing; got:\n{seen}");
+
+        // The reserved toggle chord (Ctrl+`) must hide the panel, not reach the shell.
+        handle_key(&mut app, KeyEvent::new(KeyCode::Char('`'), KeyModifiers::CONTROL));
+        assert!(matches!(app.panel, Panel::None));
+        assert!(app.focus == Focus::Editor);
+        // Shell stays alive across the toggle.
+        assert!(app.terminal.is_some());
     }
 }
 

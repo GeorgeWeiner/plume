@@ -185,6 +185,8 @@ pub struct App {
     pub sidebar: bool,
     pub overlay: Option<Overlay>,
     pub panel: Panel,
+    /// The embedded shell, spawned on first open and kept alive across toggles.
+    pub terminal: Option<crate::pty::PtyTerminal>,
     pub find: Option<FindState>,
     pub find_typing: bool,
     pub clipboard: String,
@@ -226,6 +228,7 @@ impl App {
             sidebar: true,
             overlay: None,
             panel: Panel::None,
+            terminal: None,
             find: None,
             find_typing: false,
             clipboard: String::new(),
@@ -1091,12 +1094,69 @@ impl App {
     // ---- panels ----
 
     pub fn toggle_terminal(&mut self) {
-        self.panel = match self.panel {
-            Panel::Terminal => Panel::None,
-            _ => Panel::Terminal,
-        };
-        if matches!(self.panel, Panel::None) && self.focus == Focus::Panel {
-            self.focus = Focus::Editor;
+        match self.panel {
+            Panel::Terminal => {
+                // Hide the panel but leave the shell running so scrollback and
+                // any in-flight command survive until the next open.
+                self.panel = Panel::None;
+                if self.focus == Focus::Panel {
+                    self.focus = Focus::Editor;
+                }
+            }
+            _ => {
+                self.ensure_terminal();
+                self.panel = Panel::Terminal;
+                self.focus = Focus::Panel;
+            }
+        }
+    }
+
+    /// Spawn the shell the first time the terminal is opened. On failure the
+    /// panel still opens and shows an error, so the user learns why.
+    fn ensure_terminal(&mut self) {
+        if self.terminal.is_none() {
+            match crate::pty::PtyTerminal::spawn(24, 80, &self.root) {
+                Ok(t) => self.terminal = Some(t),
+                Err(e) => self.notify(format!("Terminal: {e}"), Level::Error),
+            }
+        }
+    }
+
+    /// Replace an exited shell with a fresh one (invoked from the dead panel).
+    pub fn restart_terminal(&mut self) {
+        self.terminal = None;
+        self.ensure_terminal();
+    }
+
+    /// A terminal exists and its shell is still running.
+    pub fn terminal_live(&self) -> bool {
+        self.terminal.as_ref().is_some_and(|t| !t.is_dead())
+    }
+
+    /// True if the terminal has produced output since the last draw.
+    pub fn terminal_take_dirty(&mut self) -> bool {
+        self.terminal.as_ref().is_some_and(|t| t.take_dirty())
+    }
+
+    /// Forward already-encoded bytes to the shell.
+    pub fn terminal_input(&mut self, bytes: &[u8]) {
+        if let Some(t) = self.terminal.as_mut() {
+            t.write_input(bytes);
+        }
+    }
+
+    /// Scroll the terminal viewport through its scrollback (positive = up into
+    /// history). No-op when there's no terminal.
+    pub fn terminal_scroll(&mut self, lines: isize) {
+        if let Some(t) = self.terminal.as_ref() {
+            t.scroll(lines);
+        }
+    }
+
+    /// Jump the terminal viewport back to the live bottom.
+    pub fn terminal_scroll_to_bottom(&mut self) {
+        if let Some(t) = self.terminal.as_ref() {
+            t.scroll_to_bottom();
         }
     }
 

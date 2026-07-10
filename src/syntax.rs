@@ -53,7 +53,8 @@ impl Language {
             "toml" => Language::Toml,
             "yaml" | "yml" => Language::Yaml,
             "md" | "markdown" => Language::Markdown,
-            "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" => Language::C,
+            "c" | "h" | "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "tpp"
+            | "ipp" | "inl" | "cppm" | "ixx" => Language::C,
             "go" => Language::Go,
             "sh" | "bash" | "zsh" => Language::Shell,
             "html" | "htm" => Language::Html,
@@ -109,6 +110,7 @@ struct Cfg {
     decorator: bool,   // python `@name`
     key_eq: bool,      // toml `key =`
     key_colon: bool,   // yaml/json keys
+    scope_res: bool,   // c++ `Name::` scope resolution
 }
 
 const RUST_KW: &[&str] = &[
@@ -161,17 +163,29 @@ const GO_TYPES: &[&str] = &[
 ];
 
 const C_KW: &[&str] = &[
-    "auto", "break", "case", "class", "const", "continue", "default", "delete", "do", "else",
-    "enum", "extern", "for", "goto", "if", "inline", "namespace", "new", "operator",
-    "private", "protected", "public", "register", "return", "sizeof", "static", "struct",
-    "switch", "template", "typedef", "typename", "union", "using", "virtual", "volatile",
-    "while",
+    "alignas", "alignof", "and", "asm", "auto", "bitand", "bitor", "break", "case", "catch",
+    "class", "co_await", "co_return", "co_yield", "compl", "concept", "const", "const_cast",
+    "consteval", "constexpr", "constinit", "continue", "decltype", "default", "delete", "do",
+    "dynamic_cast", "else", "enum", "explicit", "export", "extern", "final", "for", "friend",
+    "goto", "if", "inline", "mutable", "namespace", "new", "noexcept", "not", "operator", "or",
+    "override", "private", "protected", "public", "register", "reinterpret_cast", "requires",
+    "restrict", "return", "sizeof", "static", "static_assert", "static_cast", "struct",
+    "switch", "template", "thread_local", "throw", "try", "typedef", "typeid", "typename",
+    "union", "using", "virtual", "volatile", "while", "xor",
+    // C11 keywords
+    "_Alignas", "_Alignof", "_Atomic", "_Bool", "_Generic", "_Noreturn", "_Static_assert",
+    "_Thread_local",
 ];
 const C_CONST: &[&str] = &["true", "false", "NULL", "nullptr", "this"];
 const C_TYPES: &[&str] = &[
-    "void", "char", "short", "int", "long", "float", "double", "signed", "unsigned", "bool",
-    "size_t", "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t",
-    "uint64_t",
+    "void", "char", "wchar_t", "char8_t", "char16_t", "char32_t", "short", "int", "long",
+    "float", "double", "signed", "unsigned", "bool",
+    "size_t", "ssize_t", "ptrdiff_t", "intptr_t", "uintptr_t", "intmax_t", "uintmax_t",
+    "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+    "FILE", "va_list", "nullptr_t",
+    // common std types (also caught namespaced via `::`)
+    "string", "wstring", "string_view", "vector", "unordered_map", "optional", "shared_ptr",
+    "unique_ptr", "weak_ptr",
 ];
 
 const SH_KW: &[&str] = &[
@@ -195,6 +209,7 @@ fn cfg(lang: Language) -> Cfg {
         decorator: false,
         key_eq: false,
         key_colon: false,
+        scope_res: false,
     };
     match lang {
         Language::Rust => Cfg {
@@ -246,7 +261,9 @@ fn cfg(lang: Language) -> Cfg {
             keywords: C_KW,
             constants: C_CONST,
             types: C_TYPES,
+            cap_types: true,
             hash_preproc: true,
+            scope_res: true,
             ..base
         },
         Language::Go => Cfg {
@@ -458,6 +475,9 @@ fn scan_generic(lang: Language, line: &str, mut in_block: bool) -> (Vec<(usize, 
                 Some(Tok::Attr)
             } else if cfg.cap_types && word.chars().next().is_some_and(|f| f.is_uppercase()) {
                 Some(Tok::Type)
+            } else if cfg.scope_res && next == ':' && chars.get(i + 1) == Some(&':') {
+                // `Name::` — a namespace or type qualifier.
+                Some(Tok::Type)
             } else if next == '(' {
                 Some(Tok::Fn)
             } else if cfg.key_eq {
@@ -563,3 +583,70 @@ fn scan_html(line: &str, mut in_block: bool) -> (Vec<(usize, usize, Tok)>, bool)
     }
     (out, in_block)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Token kind assigned to the first occurrence of `word` on a C/C++ line.
+    fn tok_of(line: &str, word: &str) -> Option<Tok> {
+        let (ranges, _) = scan_line(Language::C, line, false);
+        let chars: Vec<char> = line.chars().collect();
+        ranges.into_iter().find_map(|(s, e, t)| {
+            let w: String = chars[s..e].iter().collect();
+            (w == word).then_some(t)
+        })
+    }
+
+    #[test]
+    fn cpp_extensions_map_to_c() {
+        for ext in ["cpp", "cc", "cxx", "hpp", "hh", "hxx", "ipp", "cppm", "ixx"] {
+            assert_eq!(
+                Language::from_path(Path::new(&format!("a.{ext}"))),
+                Language::C,
+                "{ext} should be C/C++"
+            );
+        }
+    }
+
+    #[test]
+    fn cpp_keywords_highlight() {
+        for kw in ["constexpr", "noexcept", "override", "template", "class", "throw", "catch",
+                   "namespace", "static_cast", "decltype", "co_await", "and"] {
+            let line = format!("x {kw} y");
+            assert_eq!(tok_of(&line, kw), Some(Tok::Keyword), "{kw} should be a keyword");
+        }
+    }
+
+    #[test]
+    fn cpp_types_and_classes_highlight() {
+        assert_eq!(tok_of("size_t n = 0;", "size_t"), Some(Tok::Type));
+        assert_eq!(tok_of("uint32_t x;", "uint32_t"), Some(Tok::Type));
+        // Capitalized identifiers read as types.
+        assert_eq!(tok_of("Widget w;", "Widget"), Some(Tok::Type));
+        // std container types.
+        assert_eq!(tok_of("vector<int> v;", "vector"), Some(Tok::Type));
+    }
+
+    #[test]
+    fn cpp_scope_resolution_colors_qualifier() {
+        // The name before `::` is a namespace/type qualifier.
+        assert_eq!(tok_of("std::vector<int> v;", "std"), Some(Tok::Type));
+        assert_eq!(tok_of("MyClass::method();", "MyClass"), Some(Tok::Type));
+    }
+
+    #[test]
+    fn cpp_constants_and_preproc() {
+        assert_eq!(tok_of("auto p = nullptr;", "nullptr"), Some(Tok::Constant));
+        assert_eq!(tok_of("return true;", "true"), Some(Tok::Constant));
+        assert_eq!(tok_of("#include <vector>", "#include"), Some(Tok::Attr));
+    }
+
+    #[test]
+    fn c_code_still_works() {
+        assert_eq!(tok_of("int main(void) {", "int"), Some(Tok::Type));
+        assert_eq!(tok_of("int main(void) {", "main"), Some(Tok::Fn));
+        assert_eq!(tok_of("for (int i = 0;", "for"), Some(Tok::Keyword));
+    }
+}
+

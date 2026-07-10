@@ -6,8 +6,12 @@ keybindings from VS Code, the polish ambitions from JetBrains.
 
 > This is a working *prototype* built for speed of iteration, not a production
 > editor. Everything in the keymap below actually works; the genuinely
-> LSP-shaped features (semantic rename, real formatting, the terminal panel)
-> are honest naive versions or placeholders.
+> LSP-shaped features (semantic rename, real formatting) are honest naive
+> versions or placeholders. The terminal panel, though, is a real embedded
+> shell — a PTY parsed by [vt100] and rendered into the panel. Open it with
+> `` Ctrl+` `` (or `Ctrl+J`); every keystroke goes to the shell, `` Ctrl+` ``
+> hides it again (the shell keeps running), and the mouse wheel or
+> `Shift+PageUp`/`PageDown` scrolls through its scrollback.
 
 ## Install
 
@@ -169,13 +173,15 @@ src/
 ├── config.rs    config file: load / persist / template
 ├── palette.rs   command palette / quick open / fuzzy matcher / input line
 ├── search.rs    project-wide grep + file listing (threaded)
+├── pty.rs       embedded terminal: PTY + vt100 parser + key encoding
 ├── syntax.rs    hand-rolled per-line highlighter (12 languages)
 ├── theme.rs     57 theme definitions
 ├── keys.rs      keyboard + mouse dispatch (keymap-driven)
 └── ui.rs        all rendering
 ```
 
-Design choices in the spirit of "lightweight": the only dependency is ratatui;
+Design choices in the spirit of "lightweight": dependencies are kept to
+ratatui plus `portable-pty` and `vt100` for the embedded terminal;
 syntax highlighting is a small hand-written scanner with one line of carried
 state (block comments) instead of a grammar engine; undo is delta-based (each
 edit records only its changed line range) with typing coalescing; keybindings
@@ -187,7 +193,6 @@ threads and skips binaries, `.git`, `target`, `node_modules`.
 
 - Rename/format/references/extract are naive text operations, not semantic
   (that would need an LSP client).
-- The terminal panel is a visual placeholder — no PTY.
 - Clipboard is internal to the app (no OSC52/system clipboard).
 - Files keep their original line endings (CRLF or LF) and are saved with a
   trailing newline; new files use the platform default (CRLF on Windows).
@@ -197,3 +202,4 @@ threads and skips binaries, `.git`, `target`, `node_modules`.
 `cargo run --release -- demo`.
 
 [ratatui]: https://ratatui.rs
+[vt100]: https://crates.io/crates/vt100

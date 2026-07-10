@@ -7,6 +7,7 @@ mod keymap;
 mod keys;
 mod palette;
 mod paths;
+mod pty;
 mod search;
 mod session;
 mod syntax;
@@ -114,11 +115,20 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> 
     // redraw instead of one per event.
     let mut dirty = true;
     loop {
+        // Pull in any output the terminal's reader thread has produced so it
+        // draws this iteration.
+        dirty |= app.terminal_take_dirty();
         if dirty {
             terminal.draw(|f| ui::draw(f, app))?;
             dirty = false;
         }
-        if event::poll(Duration::from_millis(100))? {
+        // With a live terminal on screen, poll faster so its echo feels immediate.
+        let timeout = if app.terminal_live() {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(100)
+        };
+        if event::poll(timeout)? {
             let mut budget = 256; // cap so a continuous flood can't starve rendering
             loop {
                 match event::read()? {
