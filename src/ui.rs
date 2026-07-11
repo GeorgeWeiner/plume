@@ -279,6 +279,7 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
     let overlay_open = app.overlay.is_some();
     let find_typing = app.find_typing;
     let guide_mode = app.indent_guides;
+    let guide_offset = app.indent_guide_offset;
     let Some(buf) = app.buffers.get_mut(app.active) else {
         return;
     };
@@ -368,23 +369,22 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
                 bracket_cols.push(p.close.1);
             }
         }
-        // Faint dotted guides at each indent level. Each sits one column left of
-        // the level's content (clamped at 0) so it lands in the whitespace
-        // rather than directly under the code's first character.
+        // Faint dotted guides at each indent level. `guide_offset` shifts them
+        // left of the indent stop (0 = on the stop, 1 = one column into the
+        // whitespace); both guides use the same shift so they stay aligned.
         if guide_mode == IndentGuideMode::All {
             let ind = buf.guide_indent(row);
             let mut c = 0;
             while c < ind {
-                guides.push((c.saturating_sub(1), GUIDE_GLYPH, dim_color));
+                guides.push((c.saturating_sub(guide_offset), GUIDE_GLYPH, dim_color));
                 c += TAB_STOP;
             }
         }
         // The active guide for the enclosing block, drawn last so it wins the
-        // cell over any dim guide sharing its column (same left shift, so it
-        // stays aligned with the dim guides).
+        // cell over any dim guide sharing its column.
         if let (Some(p), Some(v)) = (pair, active_vcol) {
             if p.open.0 < row && row < p.close.0 {
-                guides.push((v.saturating_sub(1), GUIDE_GLYPH, active_color));
+                guides.push((v.saturating_sub(guide_offset), GUIDE_GLYPH, active_color));
             }
         }
         spans.extend(line_spans(
@@ -1375,6 +1375,35 @@ mod tests {
         b.recompute_states();
         b.goto(2, 8); // inside the inner block
         app
+    }
+
+    // Leftmost screen column holding an active-colored guide glyph.
+    fn active_guide_min_x(term: &Terminal<TestBackend>, color: Color) -> Option<u16> {
+        let buf = term.backend().buffer();
+        let mut best: Option<u16> = None;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let c = buf.cell((x, y)).unwrap();
+                if c.symbol() == super::GUIDE_GLYPH.to_string() && c.style().fg == Some(color) {
+                    best = Some(best.map_or(x, |b| b.min(x)));
+                }
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn guide_offset_shifts_left() {
+        let probe = App::new(PathBuf::from("."));
+        let color = blend(probe.theme().accent, probe.theme().bg, 0.5);
+        let render = |offset: usize| {
+            let mut app = nested_app();
+            app.indent_guide_offset = offset;
+            let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+            term.draw(|f| draw(f, &mut app)).unwrap();
+            active_guide_min_x(&term, color).unwrap()
+        };
+        assert_eq!(render(0), render(1) + 1, "offset 1 draws one column left of offset 0");
     }
 
     #[test]

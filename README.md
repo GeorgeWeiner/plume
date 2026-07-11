@@ -136,6 +136,10 @@ palette (*Indent Guides: All / Context / Off*):
 - **`context`** — only the guide for the block enclosing the cursor.
 - **`off`** — no guides.
 
+Guides snap to whole character columns. `indent_guide_offset` shifts them left of
+each indent stop: `0` (default) sits on the stop, `1` nudges one column into the
+indentation whitespace.
+
 ## Configuration
 
 On first run Plume writes a documented config — to `%APPDATA%\plume\config.toml`

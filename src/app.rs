@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use ratatui::layout::Rect;
 
-use crate::buffer::Buffer;
+use crate::buffer::{Buffer, TAB_STOP};
 use crate::config;
 use crate::explorer::FileTree;
 use crate::keymap::{Chord, Keymap};
@@ -248,6 +248,8 @@ pub struct App {
     pub minimap: bool,
     /// How indentation / bracket-pair guides are shown.
     pub indent_guides: IndentGuideMode,
+    /// Columns to shift guides left of each indent stop (0 = on the stop).
+    pub indent_guide_offset: usize,
     /// When true, the next draw scrolls the editor so the cursor is visible.
     pub follow: bool,
     /// Streaming results from the current global-search worker, if any.
@@ -287,6 +289,7 @@ impl App {
             mouse_minimap: false,
             minimap: true,
             indent_guides: IndentGuideMode::All,
+            indent_guide_offset: 0,
             follow: true,
             search_rx: None,
             search_gen: 0,
@@ -403,6 +406,9 @@ impl App {
         }
         if let Some(g) = cfg.indent_guides.as_deref().and_then(IndentGuideMode::parse) {
             self.indent_guides = g;
+        }
+        if let Some(o) = cfg.indent_guide_offset {
+            self.indent_guide_offset = o.min(TAB_STOP - 1);
         }
     }
 

@@ -15,6 +15,7 @@ pub struct Config {
     pub theme: Option<String>,
     pub minimap: Option<bool>,
     pub indent_guides: Option<String>,
+    pub indent_guide_offset: Option<usize>,
     pub overrides: Vec<(CommandId, Vec<Chord>)>,
 }
 
@@ -76,6 +77,9 @@ pub fn load() -> Config {
                 "minimap" => cfg.minimap = parse_bool(&val),
                 "indent_guides" | "indent-guides" => {
                     cfg.indent_guides = Some(val.to_ascii_lowercase())
+                }
+                "indent_guide_offset" | "indent-guide-offset" => {
+                    cfg.indent_guide_offset = val.trim().parse().ok()
                 }
                 _ => {}
             },
@@ -167,6 +171,9 @@ pub fn write_template(seed: Option<(&str, &str)>) {
          #   context = only the guide for the block enclosing the cursor\n\
          #   off     = no guides\n\
          indent_guides = \"all\"\n\
+         # How many columns to shift guides left of each indent stop: 0 sits on\n\
+         # the stop (under the code's first column), 1 nudges into the whitespace.\n\
+         indent_guide_offset = 0\n\
          \n\
          # Override individual keybindings. Format:  action = \"chord\"\n\
          # A chord is like  ctrl+shift+p  /  f3  /  ctrl+slash  and a two-key\n\
