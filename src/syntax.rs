@@ -30,6 +30,8 @@ pub enum Language {
     Yaml,
     Markdown,
     C,
+    Glsl,
+    Hlsl,
     Go,
     Shell,
     Html,
@@ -55,6 +57,12 @@ impl Language {
             "md" | "markdown" => Language::Markdown,
             "c" | "h" | "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "tpp"
             | "ipp" | "inl" | "cppm" | "ixx" => Language::C,
+            "glsl" | "vert" | "frag" | "geom" | "comp" | "tesc" | "tese" | "vs" | "fs" | "gs"
+            | "vsh" | "fsh" | "vertex" | "fragment" | "mesh" | "task" | "rgen" | "rchit"
+            | "rmiss" | "rahit" | "rint" | "rcall" => Language::Glsl,
+            "hlsl" | "hlsli" | "fx" | "fxh" | "cginc" | "compute" | "usf" | "ush" | "shader" => {
+                Language::Hlsl
+            }
             "go" => Language::Go,
             "sh" | "bash" | "zsh" => Language::Shell,
             "html" | "htm" => Language::Html,
@@ -74,6 +82,8 @@ impl Language {
             Language::Yaml => "YAML",
             Language::Markdown => "Markdown",
             Language::C => "C/C++",
+            Language::Glsl => "GLSL",
+            Language::Hlsl => "HLSL",
             Language::Go => "Go",
             Language::Shell => "Shell",
             Language::Html => "HTML",
@@ -89,6 +99,8 @@ impl Language {
             | Language::JavaScript
             | Language::TypeScript
             | Language::C
+            | Language::Glsl
+            | Language::Hlsl
             | Language::Go => Some("//"),
             Language::Python | Language::Toml | Language::Yaml | Language::Shell => Some("#"),
             _ => None,
@@ -188,6 +200,58 @@ const C_TYPES: &[&str] = &[
     "unique_ptr", "weak_ptr",
 ];
 
+const GLSL_KW: &[&str] = &[
+    "attribute", "break", "buffer", "case", "centroid", "coherent", "const", "continue",
+    "default", "discard", "do", "else", "flat", "for", "highp", "if", "in", "inout",
+    "invariant", "layout", "lowp", "mediump", "noperspective", "out", "patch", "precise",
+    "precision", "readonly", "restrict", "return", "sample", "shared", "smooth", "struct",
+    "subroutine", "switch", "uniform", "varying", "volatile", "while", "writeonly",
+];
+const GLSL_TYPES: &[&str] = &[
+    "void", "bool", "int", "uint", "float", "double",
+    "vec2", "vec3", "vec4", "bvec2", "bvec3", "bvec4", "ivec2", "ivec3", "ivec4",
+    "uvec2", "uvec3", "uvec4", "dvec2", "dvec3", "dvec4",
+    "mat2", "mat3", "mat4", "mat2x2", "mat2x3", "mat2x4", "mat3x2", "mat3x3", "mat3x4",
+    "mat4x2", "mat4x3", "mat4x4", "dmat2", "dmat3", "dmat4",
+    "sampler1D", "sampler2D", "sampler3D", "samplerCube", "sampler2DArray", "samplerCubeArray",
+    "sampler2DShadow", "samplerCubeShadow", "sampler2DMS", "isampler2D", "usampler2D",
+    "isampler3D", "usampler3D", "image1D", "image2D", "image3D", "imageCube", "atomic_uint",
+];
+const GLSL_CONST: &[&str] = &[
+    "true", "false", "gl_Position", "gl_PointSize", "gl_FragCoord", "gl_FragColor",
+    "gl_FragDepth", "gl_VertexID", "gl_InstanceID", "gl_PrimitiveID", "gl_Layer",
+    "gl_GlobalInvocationID", "gl_LocalInvocationID", "gl_WorkGroupID", "gl_NumWorkGroups",
+    "gl_LocalInvocationIndex", "gl_WorkGroupSize", "gl_TessCoord", "gl_in", "gl_out",
+];
+
+const HLSL_KW: &[&str] = &[
+    "break", "case", "cbuffer", "centroid", "class", "column_major", "const", "continue",
+    "default", "discard", "do", "else", "extern", "for", "globallycoherent", "groupshared",
+    "if", "in", "inline", "inout", "interface", "linear", "namespace", "nointerpolation",
+    "noperspective", "out", "packoffset", "pass", "precise", "register", "return",
+    "row_major", "sample", "sampler_state", "shared", "snorm", "static", "struct", "switch",
+    "tbuffer", "technique", "typedef", "uniform", "unorm", "volatile", "while",
+];
+const HLSL_TYPES: &[&str] = &[
+    "void", "bool", "int", "uint", "dword", "half", "float", "double", "matrix", "vector",
+    "min16float", "min10float", "min16int", "min12int", "min16uint",
+    "float1", "float2", "float3", "float4", "int1", "int2", "int3", "int4",
+    "uint1", "uint2", "uint3", "uint4", "half2", "half3", "half4", "bool2", "bool3", "bool4",
+    "double2", "double3", "double4",
+    "float1x1", "float2x2", "float3x3", "float4x4", "float2x3", "float3x2", "float3x4",
+    "float4x3", "float2x4", "float4x2",
+    "Texture1D", "Texture2D", "Texture3D", "TextureCube", "Texture2DArray", "TextureCubeArray",
+    "Texture2DMS", "Texture2DMSArray", "RWTexture1D", "RWTexture2D", "RWTexture3D",
+    "Buffer", "RWBuffer", "StructuredBuffer", "RWStructuredBuffer", "ByteAddressBuffer",
+    "RWByteAddressBuffer", "AppendStructuredBuffer", "ConsumeStructuredBuffer",
+    "SamplerState", "SamplerComparisonState", "ConstantBuffer",
+];
+const HLSL_CONST: &[&str] = &[
+    "true", "false", "SV_Position", "SV_POSITION", "SV_Target", "SV_TARGET", "SV_Depth",
+    "SV_VertexID", "SV_InstanceID", "SV_DispatchThreadID", "SV_GroupID", "SV_GroupThreadID",
+    "SV_GroupIndex", "SV_PrimitiveID", "SV_IsFrontFace",
+];
+
 const SH_KW: &[&str] = &[
     "case", "do", "done", "elif", "else", "esac", "exit", "export", "fi", "for", "function",
     "if", "in", "local", "return", "select", "then", "until", "while", "echo", "source",
@@ -264,6 +328,28 @@ fn cfg(lang: Language) -> Cfg {
             cap_types: true,
             hash_preproc: true,
             scope_res: true,
+            ..base
+        },
+        Language::Glsl => Cfg {
+            line_comment: Some("//"),
+            block: Some(("/*", "*/")),
+            strings: &['"'],
+            keywords: GLSL_KW,
+            constants: GLSL_CONST,
+            types: GLSL_TYPES,
+            cap_types: true,
+            hash_preproc: true,
+            ..base
+        },
+        Language::Hlsl => Cfg {
+            line_comment: Some("//"),
+            block: Some(("/*", "*/")),
+            strings: &['"'],
+            keywords: HLSL_KW,
+            constants: HLSL_CONST,
+            types: HLSL_TYPES,
+            cap_types: true,
+            hash_preproc: true,
             ..base
         },
         Language::Go => Cfg {
@@ -647,6 +733,50 @@ mod tests {
         assert_eq!(tok_of("int main(void) {", "int"), Some(Tok::Type));
         assert_eq!(tok_of("int main(void) {", "main"), Some(Tok::Fn));
         assert_eq!(tok_of("for (int i = 0;", "for"), Some(Tok::Keyword));
+    }
+
+    /// Token kind of the first occurrence of `word` on a line in `lang`.
+    fn tok_in(lang: Language, line: &str, word: &str) -> Option<Tok> {
+        let (ranges, _) = scan_line(lang, line, false);
+        let chars: Vec<char> = line.chars().collect();
+        ranges.into_iter().find_map(|(s, e, t)| {
+            let w: String = chars[s..e].iter().collect();
+            (w == word).then_some(t)
+        })
+    }
+
+    #[test]
+    fn shader_extensions_map() {
+        for ext in ["glsl", "vert", "frag", "comp", "geom", "tesc", "tese"] {
+            assert_eq!(Language::from_path(Path::new(&format!("a.{ext}"))), Language::Glsl, "{ext}");
+        }
+        for ext in ["hlsl", "hlsli", "fx", "fxh", "cginc", "compute", "usf"] {
+            assert_eq!(Language::from_path(Path::new(&format!("a.{ext}"))), Language::Hlsl, "{ext}");
+        }
+    }
+
+    #[test]
+    fn glsl_highlights() {
+        assert_eq!(tok_in(Language::Glsl, "uniform mat4 u_mvp;", "uniform"), Some(Tok::Keyword));
+        assert_eq!(tok_in(Language::Glsl, "uniform mat4 u_mvp;", "mat4"), Some(Tok::Type));
+        assert_eq!(tok_in(Language::Glsl, "vec3 n = normalize(v);", "vec3"), Some(Tok::Type));
+        assert_eq!(tok_in(Language::Glsl, "vec3 n = normalize(v);", "normalize"), Some(Tok::Fn));
+        assert_eq!(tok_in(Language::Glsl, "gl_Position = p;", "gl_Position"), Some(Tok::Constant));
+        assert_eq!(tok_in(Language::Glsl, "#version 330 core", "#version"), Some(Tok::Attr));
+        assert_eq!(tok_in(Language::Glsl, "float x = 1.0;", "// c"), None); // sanity: no false match
+    }
+
+    #[test]
+    fn hlsl_highlights() {
+        assert_eq!(tok_in(Language::Hlsl, "cbuffer Globals {", "cbuffer"), Some(Tok::Keyword));
+        assert_eq!(tok_in(Language::Hlsl, "float4 c = 0;", "float4"), Some(Tok::Type));
+        assert_eq!(tok_in(Language::Hlsl, "Texture2D tex;", "Texture2D"), Some(Tok::Type));
+        assert_eq!(tok_in(Language::Hlsl, "float3 v = mul(m, p);", "mul"), Some(Tok::Fn));
+        assert_eq!(
+            tok_in(Language::Hlsl, "float4 p : SV_POSITION;", "SV_POSITION"),
+            Some(Tok::Constant)
+        );
+        assert_eq!(tok_in(Language::Hlsl, "#define PI 3.14", "#define"), Some(Tok::Attr));
     }
 }
 

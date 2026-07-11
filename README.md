@@ -202,7 +202,7 @@ src/
 ├── palette.rs   command palette / quick open / fuzzy matcher / input line
 ├── search.rs    project-wide grep + file listing (threaded)
 ├── pty.rs       embedded terminal: PTY + vt100 parser + key encoding
-├── syntax.rs    hand-rolled per-line highlighter (12 languages)
+├── syntax.rs    hand-rolled per-line highlighter (incl. GLSL & HLSL shaders)
 ├── theme.rs     57 theme definitions
 ├── keys.rs      keyboard + mouse dispatch (keymap-driven)
 └── ui.rs        all rendering

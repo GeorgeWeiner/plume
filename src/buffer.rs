@@ -331,6 +331,8 @@ impl Buffer {
                 | Language::JavaScript
                 | Language::TypeScript
                 | Language::C
+                | Language::Glsl
+                | Language::Hlsl
                 | Language::Go
                 | Language::Css
                 | Language::Html
