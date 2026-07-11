@@ -119,14 +119,22 @@ palette → *Toggle Minimap*); the choice is saved to your config (`minimap =
 true`). It hides itself automatically on terminals too narrow to spare the
 room, and its cost is bounded by the panel size — no slowdown on huge files.
 
-## Bracket pair guide
+## Indentation & bracket-pair guides
 
-When the cursor sits inside a `()`, `[]` or `{}`, its two brackets are
-accent-highlighted and a faint vertical line is drawn down the block to connect
-them — so it's obvious at a glance which brackets belong together. The matcher
-ignores brackets inside strings and comments, picks the innermost enclosing
-pair, and caps its scan so an unbalanced file never costs more than a bounded
-walk around the cursor.
+Faint dotted vertical guides run down the left edge of every indentation level,
+JetBrains-style, so nested structure is readable at a glance (they even continue
+through blank lines inside a block). The block that *encloses the cursor* is
+emphasized: its guide is drawn in the accent color and its two brackets are
+highlighted, so it's obvious which `()`, `[]` or `{}` belong together. The
+bracket matcher ignores brackets inside strings and comments, picks the
+innermost enclosing pair, and caps its scan.
+
+Three modes, set with `indent_guides` in the config or cycled from the command
+palette (*Indent Guides: All / Context / Off*):
+
+- **`all`** (default) — dotted guides at every level, on every line.
+- **`context`** — only the guide for the block enclosing the cursor.
+- **`off`** — no guides.
 
 ## Configuration
 

@@ -230,6 +230,7 @@ pub fn action_from_str(name: &str) -> Option<CommandId> {
         "toggle_sidebar" => C::ToggleSidebar,
         "toggle_terminal" => C::ToggleTerminal,
         "toggle_minimap" | "minimap" => C::ToggleMinimap,
+        "cycle_indent_guides" | "indent_guides" => C::CycleIndentGuides,
         "theme_picker" | "color_theme" => C::ThemePicker,
         "keymap_picker" | "keymap" => C::KeymapPicker,
         "rename_symbol" | "rename" => C::RenameSymbol,

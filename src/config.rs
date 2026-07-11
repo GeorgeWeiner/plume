@@ -14,6 +14,7 @@ pub struct Config {
     pub keymap: Option<String>,
     pub theme: Option<String>,
     pub minimap: Option<bool>,
+    pub indent_guides: Option<String>,
     pub overrides: Vec<(CommandId, Vec<Chord>)>,
 }
 
@@ -73,6 +74,9 @@ pub fn load() -> Config {
                 "keymap" => cfg.keymap = Some(val.to_ascii_lowercase()),
                 "theme" => cfg.theme = Some(val),
                 "minimap" => cfg.minimap = parse_bool(&val),
+                "indent_guides" | "indent-guides" => {
+                    cfg.indent_guides = Some(val.to_ascii_lowercase())
+                }
                 _ => {}
             },
             "keybindings" | "keys" => {
@@ -157,6 +161,12 @@ pub fn write_template(seed: Option<(&str, &str)>) {
          \n\
          # Show the zoomed-out minimap on the right (toggle in-app with F9):\n\
          minimap = true\n\
+         \n\
+         # Indentation / bracket-pair guides:  all | context | off\n\
+         #   all     = faint dotted guides at every indent level (JetBrains-style)\n\
+         #   context = only the guide for the block enclosing the cursor\n\
+         #   off     = no guides\n\
+         indent_guides = \"all\"\n\
          \n\
          # Override individual keybindings. Format:  action = \"chord\"\n\
          # A chord is like  ctrl+shift+p  /  f3  /  ctrl+slash  and a two-key\n\

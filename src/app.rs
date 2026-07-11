@@ -37,6 +37,44 @@ pub struct Notification {
     pub at: Instant,
 }
 
+/// How indentation / bracket-pair guides are shown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IndentGuideMode {
+    /// Faint dotted guides at every indent level, on all lines (default).
+    All,
+    /// Only the guide for the bracket pair enclosing the cursor.
+    Context,
+    Off,
+}
+
+impl IndentGuideMode {
+    pub fn parse(s: &str) -> Option<IndentGuideMode> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "all" | "true" | "on" | "always" => Some(IndentGuideMode::All),
+            "context" | "current" | "active" => Some(IndentGuideMode::Context),
+            "off" | "false" | "none" | "no" => Some(IndentGuideMode::Off),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IndentGuideMode::All => "all",
+            IndentGuideMode::Context => "context",
+            IndentGuideMode::Off => "off",
+        }
+    }
+
+    /// The next mode when cycling: all → context → off → all.
+    fn next(self) -> IndentGuideMode {
+        match self {
+            IndentGuideMode::All => IndentGuideMode::Context,
+            IndentGuideMode::Context => IndentGuideMode::Off,
+            IndentGuideMode::Off => IndentGuideMode::All,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CommandId {
     NewFile,
@@ -62,6 +100,7 @@ pub enum CommandId {
     FindReferences,
     GoToDefinition,
     ExtractVariable,
+    CycleIndentGuides,
     FocusExplorer,
     Undo,
     Redo,
@@ -95,6 +134,7 @@ pub fn command_list() -> Vec<(CommandId, &'static str)> {
         (CommandId::PrevTab, "Previous Tab"),
         (CommandId::ToggleSidebar, "Toggle Sidebar"),
         (CommandId::ToggleMinimap, "Toggle Minimap"),
+        (CommandId::CycleIndentGuides, "Indent Guides: All / Context / Off"),
         (CommandId::ToggleTerminal, "Toggle Terminal Panel"),
         (CommandId::FocusExplorer, "Focus Explorer"),
         (CommandId::ThemePicker, "Color Theme…"),
@@ -206,6 +246,8 @@ pub struct App {
     pub mouse_minimap: bool,
     /// Show the zoomed-out minimap column at the right of the editor.
     pub minimap: bool,
+    /// How indentation / bracket-pair guides are shown.
+    pub indent_guides: IndentGuideMode,
     /// When true, the next draw scrolls the editor so the cursor is visible.
     pub follow: bool,
     /// Streaming results from the current global-search worker, if any.
@@ -244,6 +286,7 @@ impl App {
             mouse_sel: false,
             mouse_minimap: false,
             minimap: true,
+            indent_guides: IndentGuideMode::All,
             follow: true,
             search_rx: None,
             search_gen: 0,
@@ -357,6 +400,9 @@ impl App {
         }
         if let Some(m) = cfg.minimap {
             self.minimap = m;
+        }
+        if let Some(g) = cfg.indent_guides.as_deref().and_then(IndentGuideMode::parse) {
+            self.indent_guides = g;
         }
     }
 
@@ -578,6 +624,16 @@ impl App {
                     if self.minimap { "Minimap on" } else { "Minimap off" },
                     Level::Info,
                 );
+            }
+            CommandId::CycleIndentGuides => {
+                self.indent_guides = self.indent_guides.next();
+                config::set_value("indent_guides", self.indent_guides.as_str());
+                let msg = match self.indent_guides {
+                    IndentGuideMode::All => "Indent guides: all lines",
+                    IndentGuideMode::Context => "Indent guides: current context only",
+                    IndentGuideMode::Off => "Indent guides: off",
+                };
+                self.notify(msg, Level::Info);
             }
             CommandId::ThemePicker => self.open_theme_picker(),
             CommandId::KeymapPicker => self.open_keymap_picker(),

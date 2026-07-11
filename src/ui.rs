@@ -6,13 +6,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, Focus, Level, Overlay, Panel};
+use crate::app::{App, Focus, IndentGuideMode, Level, Overlay, Panel};
 use crate::buffer::{visual_col, Buffer, TAB_STOP};
 use crate::keymap;
 use crate::palette::PaletteMode;
 use crate::search;
 use crate::syntax;
 use crate::theme::Theme;
+
+/// Dotted vertical glyph for indentation / bracket-pair guides.
+const GUIDE_GLYPH: char = '┊';
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let t = app.theme().clone();
@@ -275,6 +278,7 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
     app.follow = false;
     let overlay_open = app.overlay.is_some();
     let find_typing = app.find_typing;
+    let guide_mode = app.indent_guides;
     let Some(buf) = app.buffers.get_mut(app.active) else {
         return;
     };
@@ -306,11 +310,16 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
     let width = text_rect.width as usize;
 
     // Bracket pair enclosing the cursor: its two brackets get accent-highlighted
-    // and a vertical guide is drawn down the closing bracket's column to connect
-    // them across the block.
-    let pair = buf.enclosing_brackets();
-    let guide_color = blend(t.accent, t.bg, 0.62);
-    let guide_vcol = pair.map(|p| visual_col(buf.line(p.close.0), p.close.1));
+    // and the "active" guide down its column is drawn in accent. Faint dotted
+    // guides at every indent level are added in All mode.
+    let pair = if guide_mode == IndentGuideMode::Off {
+        None
+    } else {
+        buf.enclosing_brackets()
+    };
+    let active_color = blend(t.accent, t.bg, 0.5);
+    let dim_color = blend(t.fg, t.bg, 0.78);
+    let active_vcol = pair.map(|p| visual_col(buf.line(p.close.0), p.close.1));
 
     // Only the find matches on visible rows matter for rendering; matches are
     // row-major sorted, so slice them out instead of cloning the whole list.
@@ -350,7 +359,7 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
             nr_style,
         )];
         let mut bracket_cols: Vec<usize> = Vec::new();
-        let mut guide = None;
+        let mut guides: Vec<(usize, char, Color)> = Vec::new();
         if let Some(p) = pair {
             if p.open.0 == row {
                 bracket_cols.push(p.open.1);
@@ -358,13 +367,26 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
             if p.close.0 == row {
                 bracket_cols.push(p.close.1);
             }
+        }
+        // Faint dotted guides at each indent level (left edge of every level).
+        if guide_mode == IndentGuideMode::All {
+            let ind = buf.guide_indent(row);
+            let mut c = 0;
+            while c < ind {
+                guides.push((c, GUIDE_GLYPH, dim_color));
+                c += TAB_STOP;
+            }
+        }
+        // The active guide for the enclosing block, drawn last so it wins the
+        // cell over any dim guide sharing its column.
+        if let (Some(p), Some(v)) = (pair, active_vcol) {
             if p.open.0 < row && row < p.close.0 {
-                guide = guide_vcol.map(|v| (v, guide_color));
+                guides.push((v, GUIDE_GLYPH, active_color));
             }
         }
         spans.extend(line_spans(
             t, buf, row, row_bg, scroll_col, width, sel, &vis_matches, cur_match, qlen,
-            &bracket_cols, guide,
+            &bracket_cols, &guides,
         ));
         out.push(Line::from(spans));
     }
@@ -538,9 +560,10 @@ fn line_spans(
     cur_match: Option<(usize, usize)>,
     qlen: usize,
     // Char indices on this row that are a matched bracket (accent-highlighted),
-    // and an optional (visual column, color) for the bracket-pair guide line.
+    // and guides to overlay as (visual column, glyph, color); later entries win
+    // the cell, so callers push the active guide last.
     bracket_cols: &[usize],
-    guide: Option<(usize, Color)>,
+    guides: &[(usize, char, Color)],
 ) -> Vec<Span<'static>> {
     let line = buf.line(row);
     // Every char is at least one column wide, so nothing past this index can
@@ -616,12 +639,13 @@ fn line_spans(
         v = end_v;
     }
 
-    // Draw the guide only over blank space so it never clobbers code.
-    if let Some((gv, color)) = guide {
+    // Draw guides over blank space (or an already-placed guide, so the active
+    // guide can override a faint one in the same column) — never over code.
+    for &(gv, glyph, color) in guides {
         if gv >= scroll_col && gv < scroll_col + width {
             let x = gv - scroll_col;
-            if cells[x].0 == ' ' {
-                cells[x] = ('│', color, cells[x].2);
+            if cells[x].0 == ' ' || cells[x].0 == GUIDE_GLYPH {
+                cells[x] = (glyph, color, cells[x].2);
             }
         }
     }
@@ -1313,15 +1337,63 @@ mod tests {
         assert_eq!(braille_count(&term), 0);
     }
 
-    // Count guide glyphs only — `│` also draws block borders and the minimap
-    // separator, so match on the guide's distinctive accent-blend color.
+    // Count active-guide glyphs — match on the distinctive accent-blend color so
+    // faint indent guides and block borders aren't counted.
     fn guide_count(term: &Terminal<TestBackend>, color: Color) -> usize {
         term.backend()
             .buffer()
             .content()
             .iter()
-            .filter(|c| c.symbol() == "│" && c.style().fg == Some(color))
+            .filter(|c| c.symbol() == super::GUIDE_GLYPH.to_string() && c.style().fg == Some(color))
             .count()
+    }
+
+    fn any_guide_count(term: &Terminal<TestBackend>) -> usize {
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|c| c.symbol() == super::GUIDE_GLYPH.to_string())
+            .count()
+    }
+
+    fn nested_app() -> App {
+        let mut app = App::new(PathBuf::from("/plume-nonexistent-test-root"));
+        app.open_untitled();
+        let b = app.buf_mut().unwrap();
+        b.language = crate::syntax::Language::Rust;
+        b.lines = vec![
+            "fn main() {".into(),
+            "    if x {".into(),
+            "        work();".into(),
+            "    }".into(),
+            "}".into(),
+        ];
+        b.recompute_states();
+        b.goto(2, 8); // inside the inner block
+        app
+    }
+
+    #[test]
+    fn indent_guide_modes() {
+        // All: guides at every level (col 0 and col 4 appear across the block).
+        let mut app = nested_app();
+        app.indent_guides = IndentGuideMode::All;
+        let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let all = any_guide_count(&term);
+        assert!(all >= 4, "All mode should draw several indent guides, got {all}");
+
+        // Context: only the active block's guide — strictly fewer glyphs.
+        app.indent_guides = IndentGuideMode::Context;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        let ctx = any_guide_count(&term);
+        assert!(ctx > 0 && ctx < all, "Context mode should draw only the active guide, got {ctx} vs {all}");
+
+        // Off: nothing.
+        app.indent_guides = IndentGuideMode::Off;
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(any_guide_count(&term), 0, "Off mode draws no guides");
     }
 
     #[test]
@@ -1350,13 +1422,14 @@ mod tests {
             b.goto(0, 0); // cursor not enclosed by any pair
         }
 
-        let guide_color = blend(app.theme().accent, app.theme().bg, 0.62);
+        let active_color = blend(app.theme().accent, app.theme().bg, 0.5);
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         term.draw(|f| draw(f, &mut app)).unwrap();
-        // The two interior rows each get one guide glyph in the indent column.
-        assert_eq!(guide_count(&term, guide_color), 2, "guide should span the interior rows");
+        // The two interior rows each get one active guide glyph in the block's
+        // indent column.
+        assert_eq!(guide_count(&term, active_color), 2, "active guide should span the interior rows");
 
         term.draw(|f| draw(f, &mut app_off)).unwrap();
-        assert_eq!(guide_count(&term, guide_color), 0, "no guide when the cursor isn't enclosed");
+        assert_eq!(guide_count(&term, active_color), 0, "no active guide when the cursor isn't enclosed");
     }
 }

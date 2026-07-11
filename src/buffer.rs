@@ -192,6 +192,37 @@ impl Buffer {
         self.line(row).chars().count()
     }
 
+    /// Visual width of `row`'s leading whitespace, or `None` if the line is
+    /// blank (all whitespace) — used to place indentation guides.
+    fn content_indent(&self, row: usize) -> Option<usize> {
+        let mut w = 0;
+        for c in self.line(row).chars() {
+            match c {
+                ' ' => w += 1,
+                '\t' => w += TAB_STOP - w % TAB_STOP,
+                _ => return Some(w),
+            }
+        }
+        None
+    }
+
+    /// Effective indentation (visual columns) for drawing guides on `row`. A
+    /// blank line borrows the shallower indent of its nearest non-blank
+    /// neighbors, so guides run through blank lines inside a block but stop at
+    /// its edges. Neighbor search is bounded so blank spans stay cheap.
+    pub fn guide_indent(&self, row: usize) -> usize {
+        if let Some(w) = self.content_indent(row) {
+            return w;
+        }
+        const LOOK: usize = 500;
+        let up = (0..row).rev().take(LOOK).find_map(|r| self.content_indent(r));
+        let down = (row + 1..self.lines.len()).take(LOOK).find_map(|r| self.content_indent(r));
+        match (up, down) {
+            (Some(a), Some(b)) => a.min(b),
+            _ => 0,
+        }
+    }
+
     // ---- bracket matching ----
 
     /// Char positions (char index) that are inside a string or comment token on
