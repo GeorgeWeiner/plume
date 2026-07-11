@@ -15,7 +15,7 @@ pub struct Config {
     pub theme: Option<String>,
     pub minimap: Option<bool>,
     pub indent_guides: Option<String>,
-    pub indent_guide_offset: Option<usize>,
+    pub indent_guide_offset: Option<f32>,
     pub overrides: Vec<(CommandId, Vec<Chord>)>,
 }
 
@@ -171,8 +171,9 @@ pub fn write_template(seed: Option<(&str, &str)>) {
          #   context = only the guide for the block enclosing the cursor\n\
          #   off     = no guides\n\
          indent_guides = \"all\"\n\
-         # How many columns to shift guides left of each indent stop: 0 sits on\n\
-         # the stop (under the code's first column), 1 nudges into the whitespace.\n\
+         # Shift guides left of each indent stop. 0 sits on the stop, 1 one\n\
+         # column left, and 0.5 draws a thin bar exactly on the column boundary\n\
+         # between them (solid rather than dotted, since it hugs a cell edge).\n\
          indent_guide_offset = 0\n\
          \n\
          # Override individual keybindings. Format:  action = \"chord\"\n\

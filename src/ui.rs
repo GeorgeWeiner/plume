@@ -14,8 +14,11 @@ use crate::search;
 use crate::syntax;
 use crate::theme::Theme;
 
-/// Dotted vertical glyph for indentation / bracket-pair guides.
+/// Dotted vertical glyph for indentation / bracket-pair guides (cell-centered).
 const GUIDE_GLYPH: char = '┊';
+/// Thin vertical bar hugging the left edge of its cell — lets a guide sit on a
+/// column boundary (visually half a cell left of the centered glyph).
+const GUIDE_EDGE_GLYPH: char = '▏';
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let t = app.theme().clone();
@@ -321,6 +324,14 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
     let active_color = blend(t.accent, t.bg, 0.5);
     let dim_color = blend(t.fg, t.bg, 0.78);
     let active_vcol = pair.map(|p| visual_col(buf.line(p.close.0), p.close.1));
+    // Whole-column shift left of the indent stop, plus a ~0.5 fractional part
+    // that draws the guide on the column boundary (left-edge glyph) instead.
+    let guide_shift = guide_offset.floor() as usize;
+    let guide_glyph = if (guide_offset.fract() - 0.5).abs() < 0.25 {
+        GUIDE_EDGE_GLYPH
+    } else {
+        GUIDE_GLYPH
+    };
 
     // Only the find matches on visible rows matter for rendering; matches are
     // row-major sorted, so slice them out instead of cloning the whole list.
@@ -369,14 +380,14 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
                 bracket_cols.push(p.close.1);
             }
         }
-        // Faint dotted guides at each indent level. `guide_offset` shifts them
-        // left of the indent stop (0 = on the stop, 1 = one column into the
-        // whitespace); both guides use the same shift so they stay aligned.
+        // Faint guides at each indent level. `guide_offset` shifts them left of
+        // the indent stop (0 = on it, 1 = one column left, 0.5 = on the boundary
+        // between); both guides use the same shift/glyph so they stay aligned.
         if guide_mode == IndentGuideMode::All {
             let ind = buf.guide_indent(row);
             let mut c = 0;
             while c < ind {
-                guides.push((c.saturating_sub(guide_offset), GUIDE_GLYPH, dim_color));
+                guides.push((c.saturating_sub(guide_shift), guide_glyph, dim_color));
                 c += TAB_STOP;
             }
         }
@@ -384,7 +395,7 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
         // cell over any dim guide sharing its column.
         if let (Some(p), Some(v)) = (pair, active_vcol) {
             if p.open.0 < row && row < p.close.0 {
-                guides.push((v.saturating_sub(guide_offset), GUIDE_GLYPH, active_color));
+                guides.push((v.saturating_sub(guide_shift), guide_glyph, active_color));
             }
         }
         spans.extend(line_spans(
@@ -647,7 +658,8 @@ fn line_spans(
     for &(gv, glyph, color) in guides {
         if gv >= scroll_col && gv < scroll_col + width {
             let x = gv - scroll_col;
-            if cells[x].0 == ' ' || cells[x].0 == GUIDE_GLYPH {
+            let cell = cells[x].0;
+            if cell == ' ' || cell == GUIDE_GLYPH || cell == GUIDE_EDGE_GLYPH {
                 cells[x] = (glyph, color, cells[x].2);
             }
         }
@@ -1378,13 +1390,13 @@ mod tests {
     }
 
     // Leftmost screen column holding an active-colored guide glyph.
-    fn active_guide_min_x(term: &Terminal<TestBackend>, color: Color) -> Option<u16> {
+    fn active_guide_min_x(term: &Terminal<TestBackend>, color: Color, glyph: char) -> Option<u16> {
         let buf = term.backend().buffer();
         let mut best: Option<u16> = None;
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
                 let c = buf.cell((x, y)).unwrap();
-                if c.symbol() == super::GUIDE_GLYPH.to_string() && c.style().fg == Some(color) {
+                if c.symbol() == glyph.to_string() && c.style().fg == Some(color) {
                     best = Some(best.map_or(x, |b| b.min(x)));
                 }
             }
@@ -1396,14 +1408,18 @@ mod tests {
     fn guide_offset_shifts_left() {
         let probe = App::new(PathBuf::from("."));
         let color = blend(probe.theme().accent, probe.theme().bg, 0.5);
-        let render = |offset: usize| {
+        let render = |offset: f32, glyph: char| {
             let mut app = nested_app();
             app.indent_guide_offset = offset;
             let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
             term.draw(|f| draw(f, &mut app)).unwrap();
-            active_guide_min_x(&term, color).unwrap()
+            active_guide_min_x(&term, color, glyph).unwrap()
         };
-        assert_eq!(render(0), render(1) + 1, "offset 1 draws one column left of offset 0");
+        // offset 1 is one whole column left of offset 0 (both dotted).
+        assert_eq!(render(0.0, GUIDE_GLYPH), render(1.0, GUIDE_GLYPH) + 1);
+        // offset 0.5 draws the edge glyph on the same column as offset 0 (its
+        // left-hugging bar renders half a cell left of the centered dot).
+        assert_eq!(render(0.5, GUIDE_EDGE_GLYPH), render(0.0, GUIDE_GLYPH));
     }
 
     #[test]

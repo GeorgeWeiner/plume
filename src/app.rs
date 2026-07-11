@@ -248,8 +248,9 @@ pub struct App {
     pub minimap: bool,
     /// How indentation / bracket-pair guides are shown.
     pub indent_guides: IndentGuideMode,
-    /// Columns to shift guides left of each indent stop (0 = on the stop).
-    pub indent_guide_offset: usize,
+    /// Columns to shift guides left of each indent stop (0 = on the stop, 0.5 =
+    /// on the boundary between columns, 1 = one column left).
+    pub indent_guide_offset: f32,
     /// When true, the next draw scrolls the editor so the cursor is visible.
     pub follow: bool,
     /// Streaming results from the current global-search worker, if any.
@@ -289,7 +290,7 @@ impl App {
             mouse_minimap: false,
             minimap: true,
             indent_guides: IndentGuideMode::All,
-            indent_guide_offset: 0,
+            indent_guide_offset: 0.0,
             follow: true,
             search_rx: None,
             search_gen: 0,
@@ -408,7 +409,7 @@ impl App {
             self.indent_guides = g;
         }
         if let Some(o) = cfg.indent_guide_offset {
-            self.indent_guide_offset = o.min(TAB_STOP - 1);
+            self.indent_guide_offset = o.clamp(0.0, (TAB_STOP - 1) as f32);
         }
     }
 
