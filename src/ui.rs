@@ -368,20 +368,23 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
                 bracket_cols.push(p.close.1);
             }
         }
-        // Faint dotted guides at each indent level (left edge of every level).
+        // Faint dotted guides at each indent level. Each sits one column left of
+        // the level's content (clamped at 0) so it lands in the whitespace
+        // rather than directly under the code's first character.
         if guide_mode == IndentGuideMode::All {
             let ind = buf.guide_indent(row);
             let mut c = 0;
             while c < ind {
-                guides.push((c, GUIDE_GLYPH, dim_color));
+                guides.push((c.saturating_sub(1), GUIDE_GLYPH, dim_color));
                 c += TAB_STOP;
             }
         }
         // The active guide for the enclosing block, drawn last so it wins the
-        // cell over any dim guide sharing its column.
+        // cell over any dim guide sharing its column (same left shift, so it
+        // stays aligned with the dim guides).
         if let (Some(p), Some(v)) = (pair, active_vcol) {
             if p.open.0 < row && row < p.close.0 {
-                guides.push((v, GUIDE_GLYPH, active_color));
+                guides.push((v.saturating_sub(1), GUIDE_GLYPH, active_color));
             }
         }
         spans.extend(line_spans(
