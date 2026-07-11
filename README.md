@@ -84,6 +84,7 @@ Command shortcuts vary by preset — a few examples:
 | Toggle comment | `Ctrl+/` | `Ctrl+K Ctrl+C` | `Ctrl+/` | `Ctrl+/` |
 | Format document | `Shift+Alt+F` | `Ctrl+K Ctrl+D` | `Ctrl+Alt+L` | — |
 | Rename symbol | `F2` | `Ctrl+R Ctrl+R` | `Shift+F6` | `F2` |
+| Go to definition | `F12` | `F12` | `Ctrl+B` / `F12` | `F12` |
 
 Universal keys (same in every preset): arrow/`Home`/`End`/`PgUp`/`PgDn`
 movement, `Ctrl+arrows` word-jump, `Shift+…` to select, `Tab`/`Shift+Tab`
@@ -92,7 +93,13 @@ a popup / find bar / panel or clear the selection. Two-key sequences (like
 `Ctrl+K Ctrl+T` for the theme picker) show a pending indicator in the status bar
 after the first chord.
 
-Also universal: **`F9`** toggles the minimap.
+Also universal: **`F9`** toggles the minimap, and **`F12`** jumps to the
+definition of the symbol under the cursor (the JetBrains preset also maps
+`Ctrl+B`). It's a naive, LSP-free jump: it looks for a definition of the symbol
+(`fn foo`, `class Foo`, `let x`, `x :=`, C-style `type foo(`, …) in the current
+file first, then across the project, and jumps to it — selecting the name. If
+you're already sitting on the only definition, it shows the symbol's usages
+instead, like JetBrains' "declaration or usages".
 
 **In the file tree** (`Ctrl+E` to focus): `↑↓`/`jk` move, `↵` open/toggle,
 `←→`/`hl` collapse/expand, `a`/`n` new file, `A` new folder, `r`/`F2` rename,
@@ -111,6 +118,15 @@ drag on it to scrub through the file. Toggle it with **`F9`** (or the command
 palette → *Toggle Minimap*); the choice is saved to your config (`minimap =
 true`). It hides itself automatically on terminals too narrow to spare the
 room, and its cost is bounded by the panel size — no slowdown on huge files.
+
+## Bracket pair guide
+
+When the cursor sits inside a `()`, `[]` or `{}`, its two brackets are
+accent-highlighted and a faint vertical line is drawn down the block to connect
+them — so it's obvious at a glance which brackets belong together. The matcher
+ignores brackets inside strings and comments, picks the innermost enclosing
+pair, and caps its scan so an unbalanced file never costs more than a bounded
+walk around the cursor.
 
 ## Configuration
 
@@ -191,8 +207,10 @@ threads and skips binaries, `.git`, `target`, `node_modules`.
 
 ## Known prototype limits
 
-- Rename/format/references/extract are naive text operations, not semantic
-  (that would need an LSP client).
+- Rename/format/references/extract and go-to-definition are naive text
+  operations, not semantic (that would need an LSP client): go-to-definition
+  matches definition-shaped lines by pattern, so it can miss overloads or land
+  on a same-named symbol in another scope.
 - Clipboard is internal to the app (no OSC52/system clipboard).
 - Files keep their original line endings (CRLF or LF) and are saved with a
   trailing newline; new files use the platform default (CRLF on Windows).

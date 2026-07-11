@@ -166,7 +166,8 @@ pub fn write_template(seed: Option<(&str, &str)>) {
          #   global_search goto_line new_file close_tab next_tab prev_tab\n\
          #   toggle_sidebar toggle_terminal focus_explorer theme_picker\n\
          #   keymap_picker rename_symbol format_document find_references\n\
-         #   extract_variable undo redo cut copy paste select_all\n\
+         #   go_to_definition extract_variable undo redo cut copy paste\n\
+         #   select_all\n\
          #   duplicate_line delete_line move_lines_up move_lines_down\n\
          #   toggle_comment indent outdent quit\n\
          [keybindings]\n\

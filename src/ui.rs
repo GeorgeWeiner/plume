@@ -305,6 +305,13 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
     let sel = buf.selection();
     let width = text_rect.width as usize;
 
+    // Bracket pair enclosing the cursor: its two brackets get accent-highlighted
+    // and a vertical guide is drawn down the closing bracket's column to connect
+    // them across the block.
+    let pair = buf.enclosing_brackets();
+    let guide_color = blend(t.accent, t.bg, 0.62);
+    let guide_vcol = pair.map(|p| visual_col(buf.line(p.close.0), p.close.1));
+
     // Only the find matches on visible rows matter for rendering; matches are
     // row-major sorted, so slice them out instead of cloning the whole list.
     let (vis_matches, cur_match, qlen): (Vec<(usize, usize)>, Option<(usize, usize)>, usize) =
@@ -342,8 +349,22 @@ fn draw_editor(f: &mut Frame, app: &mut App, t: &Theme) {
             format!("{:>w$} ", row + 1, w = gutter_w as usize - 1),
             nr_style,
         )];
+        let mut bracket_cols: Vec<usize> = Vec::new();
+        let mut guide = None;
+        if let Some(p) = pair {
+            if p.open.0 == row {
+                bracket_cols.push(p.open.1);
+            }
+            if p.close.0 == row {
+                bracket_cols.push(p.close.1);
+            }
+            if p.open.0 < row && row < p.close.0 {
+                guide = guide_vcol.map(|v| (v, guide_color));
+            }
+        }
         spans.extend(line_spans(
             t, buf, row, row_bg, scroll_col, width, sel, &vis_matches, cur_match, qlen,
+            &bracket_cols, guide,
         ));
         out.push(Line::from(spans));
     }
@@ -516,6 +537,10 @@ fn line_spans(
     matches: &[(usize, usize)],
     cur_match: Option<(usize, usize)>,
     qlen: usize,
+    // Char indices on this row that are a matched bracket (accent-highlighted),
+    // and an optional (visual column, color) for the bracket-pair guide line.
+    bracket_cols: &[usize],
+    guide: Option<(usize, Color)>,
 ) -> Vec<Span<'static>> {
     let line = buf.line(row);
     // Every char is at least one column wide, so nothing past this index can
@@ -559,12 +584,17 @@ fn line_spans(
             }
         }
     }
+    // The matched brackets around the cursor: accent fg over a faint accent wash.
+    for &bc in bracket_cols {
+        if bc < n {
+            fgs[bc] = t.accent;
+            bgs[bc] = blend(t.accent, bgs[bc], 0.72);
+        }
+    }
 
-    // Expand tabs, clip to horizontal window, group equal styles into spans.
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut cur_text = String::new();
-    let mut cur_style = Style::default();
-    let mut drawn = 0usize;
+    // Paint into a visual-cell grid (tabs expanded, one cell per column), then
+    // overlay the guide and coalesce equal styles into spans.
+    let mut cells: Vec<(char, Color, Color)> = vec![(' ', t.fg, row_bg); width];
     let mut v = 0usize;
     for (i, &c) in chars.iter().enumerate() {
         let w = if c == '\t' { TAB_STOP - v % TAB_STOP } else { 1 };
@@ -576,29 +606,39 @@ fn line_spans(
         if v >= scroll_col + width {
             break;
         }
-        let style = Style::default().fg(fgs[i]).bg(bgs[i]);
+        if c == '\t' {
+            for vv in v.max(scroll_col)..end_v.min(scroll_col + width) {
+                cells[vv - scroll_col] = (' ', fgs[i], bgs[i]);
+            }
+        } else if v >= scroll_col {
+            cells[v - scroll_col] = (c, fgs[i], bgs[i]);
+        }
+        v = end_v;
+    }
+
+    // Draw the guide only over blank space so it never clobbers code.
+    if let Some((gv, color)) = guide {
+        if gv >= scroll_col && gv < scroll_col + width {
+            let x = gv - scroll_col;
+            if cells[x].0 == ' ' {
+                cells[x] = ('│', color, cells[x].2);
+            }
+        }
+    }
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut cur_text = String::new();
+    let mut cur_style = Style::default();
+    for (c, fg, bg) in cells {
+        let style = Style::default().fg(fg).bg(bg);
         if style != cur_style && !cur_text.is_empty() {
             spans.push(Span::styled(std::mem::take(&mut cur_text), cur_style));
         }
         cur_style = style;
-        if c == '\t' {
-            let visible = end_v.min(scroll_col + width) - v.max(scroll_col);
-            cur_text.push_str(&" ".repeat(visible));
-            drawn += visible;
-        } else {
-            cur_text.push(c);
-            drawn += 1;
-        }
-        v = end_v;
+        cur_text.push(c);
     }
     if !cur_text.is_empty() {
         spans.push(Span::styled(cur_text, cur_style));
-    }
-    if drawn < width {
-        spans.push(Span::styled(
-            " ".repeat(width - drawn),
-            Style::default().bg(row_bg),
-        ));
     }
     spans
 }
@@ -1271,5 +1311,52 @@ mod tests {
         term.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.layout.minimap.width, 0, "no minimap when there isn't room");
         assert_eq!(braille_count(&term), 0);
+    }
+
+    // Count guide glyphs only — `│` also draws block borders and the minimap
+    // separator, so match on the guide's distinctive accent-blend color.
+    fn guide_count(term: &Terminal<TestBackend>, color: Color) -> usize {
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|c| c.symbol() == "│" && c.style().fg == Some(color))
+            .count()
+    }
+
+    #[test]
+    fn bracket_guide_connects_the_pair() {
+        let mut app = App::new(PathBuf::from("."));
+        app.open_untitled();
+        {
+            let b = app.buf_mut().unwrap();
+            b.language = crate::syntax::Language::Rust;
+            b.lines = vec![
+                "fn f() {".into(),
+                "    a();".into(),
+                "    b();".into(),
+                "}".into(),
+            ];
+            b.recompute_states();
+            b.goto(1, 4); // put the cursor inside the block
+        }
+        let mut app_off = App::new(PathBuf::from("."));
+        app_off.open_untitled();
+        {
+            let b = app_off.buf_mut().unwrap();
+            b.language = crate::syntax::Language::Rust;
+            b.lines = app.buf().unwrap().lines.clone();
+            b.recompute_states();
+            b.goto(0, 0); // cursor not enclosed by any pair
+        }
+
+        let guide_color = blend(app.theme().accent, app.theme().bg, 0.62);
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| draw(f, &mut app)).unwrap();
+        // The two interior rows each get one guide glyph in the indent column.
+        assert_eq!(guide_count(&term, guide_color), 2, "guide should span the interior rows");
+
+        term.draw(|f| draw(f, &mut app_off)).unwrap();
+        assert_eq!(guide_count(&term, guide_color), 0, "no guide when the cursor isn't enclosed");
     }
 }

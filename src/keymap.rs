@@ -235,6 +235,9 @@ pub fn action_from_str(name: &str) -> Option<CommandId> {
         "rename_symbol" | "rename" => C::RenameSymbol,
         "format_document" | "format" => C::FormatDocument,
         "find_references" => C::FindReferences,
+        "go_to_definition" | "goto_definition" | "go_to_declaration" | "goto_declaration" => {
+            C::GoToDefinition
+        }
         "extract_variable" => C::ExtractVariable,
         "focus_explorer" => C::FocusExplorer,
         "command_palette" => C::CommandPalette,
@@ -275,6 +278,7 @@ const COMMON: &[(CommandId, &str)] = &[
     (C::ToggleTerminal, "ctrl+grave"),
     (C::ToggleTerminal, "ctrl+j"),
     (C::ToggleMinimap, "f9"),
+    (C::GoToDefinition, "f12"),
     (C::FocusExplorer, "ctrl+e"),
     (C::CommandPalette, "f1"),
     (C::ThemePicker, "ctrl+k ctrl+t"),
@@ -334,6 +338,7 @@ const JETBRAINS: &[(CommandId, &str)] = &[
     (C::RenameSymbol, "shift+f6"),
     (C::FormatDocument, "ctrl+alt+l"),
     (C::FindReferences, "alt+f7"),
+    (C::GoToDefinition, "ctrl+b"),
 ];
 
 const SUBLIME: &[(CommandId, &str)] = &[

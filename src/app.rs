@@ -60,6 +60,7 @@ pub enum CommandId {
     RenameSymbol,
     FormatDocument,
     FindReferences,
+    GoToDefinition,
     ExtractVariable,
     FocusExplorer,
     Undo,
@@ -107,6 +108,7 @@ pub fn command_list() -> Vec<(CommandId, &'static str)> {
         (CommandId::Redo, "Redo"),
         (CommandId::RenameSymbol, "Rename Symbol (naive)"),
         (CommandId::FormatDocument, "Format Document (basic)"),
+        (CommandId::GoToDefinition, "Go to Definition (naive)"),
         (CommandId::FindReferences, "Find All References (naive)"),
         (CommandId::ExtractVariable, "Extract Variable (naive)"),
         (CommandId::Quit, "Quit Plume"),
@@ -583,6 +585,7 @@ impl App {
             CommandId::RenameSymbol => self.rename_symbol_prompt(),
             CommandId::FormatDocument => self.format_document(),
             CommandId::FindReferences => self.find_references(),
+            CommandId::GoToDefinition => self.go_to_definition(),
             CommandId::ExtractVariable => self.extract_variable(),
             CommandId::FocusExplorer => {
                 self.sidebar = true;
@@ -1026,6 +1029,74 @@ impl App {
         self.run_global_search(&word, Some(format!("REFERENCES: {word}")));
     }
 
+    /// Naive "go to definition" (no LSP): jump to a definition of the symbol
+    /// under the cursor — the current file first, then the project. If the
+    /// cursor is already sitting on the only definition, fall back to showing
+    /// usages, à la JetBrains' "declaration or usages".
+    pub fn go_to_definition(&mut self) {
+        let Some((word, wcol, _)) = self.buf().and_then(|b| b.word_under_cursor()) else {
+            self.notify("Place the cursor on a symbol first", Level::Warn);
+            return;
+        };
+        let wrow = self.buf().map(|b| b.cursor.0).unwrap_or(0);
+        let cur_path = self.buf().and_then(|b| b.path.clone());
+        let len = word.chars().count();
+
+        // 1) Definitions in the live buffer (catches unsaved edits).
+        let in_file: Vec<(usize, usize)> = self
+            .buf()
+            .map(|b| {
+                b.lines
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(row, line)| {
+                        search::definition_col_in_line(line, &word).map(|col| (row, col))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let cursor_is_def = in_file.iter().any(|&(r, c)| r == wrow && c == wcol);
+        if let Some(&(r, c)) = in_file.iter().find(|&&(r, c)| (r, c) != (wrow, wcol)) {
+            if let Some(buf) = self.buf_mut() {
+                buf.select_range(r, c, len);
+            }
+            self.focus = Focus::Editor;
+            self.follow = true;
+            self.notify(format!("Definition of '{word}' (naive, this file)"), Level::Info);
+            return;
+        }
+
+        // 2) Definitions elsewhere in the project.
+        let defs = search::find_definitions(&self.root, &word, cur_path.as_deref());
+        if let Some(first) = defs.first() {
+            let (path, row, col) = (first.path.clone(), first.line_no, first.col);
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let more = if defs.len() > 1 {
+                format!(" (+{} more)", defs.len() - 1)
+            } else {
+                String::new()
+            };
+            self.open_file(&path);
+            if let Some(buf) = self.buf_mut() {
+                buf.select_range(row, col, len);
+            }
+            self.focus = Focus::Editor;
+            self.follow = true;
+            self.notify(format!("Definition of '{word}' in {name}{more}"), Level::Info);
+            return;
+        }
+
+        // 3) Nothing. If we're already on the sole definition, show usages.
+        if cursor_is_def {
+            self.find_references();
+        } else {
+            self.notify(format!("No definition found for '{word}' (naive search)"), Level::Warn);
+        }
+    }
+
     /// Open the selected search result in the editor.
     pub fn open_search_result(&mut self) {
         let Panel::Search(pane) = &self.panel else { return };
@@ -1252,5 +1323,48 @@ impl App {
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         let title = format!("Delete '{name}'? type y to confirm");
         self.open_prompt(PromptKind::DeletePath { path }, &title, "");
+    }
+}
+
+#[cfg(test)]
+mod goto_tests {
+    use super::*;
+
+    fn app_with(lines: &[&str]) -> App {
+        let mut app = App::new(PathBuf::from("."));
+        app.open_untitled();
+        let b = app.buf_mut().unwrap();
+        b.lines = lines.iter().map(|s| s.to_string()).collect();
+        b.recompute_states();
+        app
+    }
+
+    #[test]
+    fn jumps_from_use_to_definition_in_file() {
+        let mut app = app_with(&["fn helper() {}", "", "fn main() {", "    helper();", "}"]);
+        app.buf_mut().unwrap().goto(3, 6); // on the `helper` call
+        app.go_to_definition();
+        let b = app.buf().unwrap();
+        assert_eq!(b.cursor.0, 0, "should land on the definition line");
+        assert_eq!(b.anchor, Some((0, 3)), "should select the definition name");
+    }
+
+    #[test]
+    fn on_sole_definition_shows_usages() {
+        let mut app = app_with(&["fn helper() {}", "fn main() { helper(); }"]);
+        // Empty root so the project scan finds nothing and we fall back to usages.
+        app.root = PathBuf::from("/plume-nonexistent-test-root");
+        app.buf_mut().unwrap().goto(0, 3); // on the definition itself
+        app.go_to_definition();
+        // No other definition, so it falls back to a references search panel.
+        assert!(matches!(app.panel, Panel::Search(_)), "should open a usages search");
+    }
+
+    #[test]
+    fn no_symbol_no_jump() {
+        let mut app = app_with(&["    ", "x"]);
+        app.buf_mut().unwrap().goto(0, 2); // on whitespace
+        app.go_to_definition();
+        assert_eq!(app.buf().unwrap().cursor, (0, 2), "cursor unmoved");
     }
 }

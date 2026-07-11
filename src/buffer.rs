@@ -14,6 +14,31 @@ use crate::syntax::{self, Language};
 pub const TAB_STOP: usize = 4;
 const MAX_FIND_MATCHES: usize = 10_000;
 const MAX_UNDO_ENTRIES: usize = 1_000;
+/// Cap on characters visited when matching the bracket pair around the cursor,
+/// so an unbalanced file can't make a frame scan the whole buffer.
+const MAX_BRACKET_SCAN: usize = 50_000;
+
+/// The matching bracket pair enclosing the cursor: opener and closer positions
+/// as (row, char column).
+#[derive(Clone, Copy)]
+pub struct BracketPair {
+    pub open: (usize, usize),
+    pub close: (usize, usize),
+}
+
+/// Classify a bracket char as `(type index, is_opening)`: 0 = `()`, 1 = `[]`,
+/// 2 = `{}`. Non-brackets return `None`.
+fn bracket_kind(c: char) -> Option<(usize, bool)> {
+    match c {
+        '(' => Some((0, true)),
+        ')' => Some((0, false)),
+        '[' => Some((1, true)),
+        ']' => Some((1, false)),
+        '{' => Some((2, true)),
+        '}' => Some((2, false)),
+        _ => None,
+    }
+}
 
 /// Visual column of char index `col` (tabs expand to the next tab stop).
 pub fn visual_col(line: &str, col: usize) -> usize {
@@ -165,6 +190,105 @@ impl Buffer {
 
     pub fn line_len(&self, row: usize) -> usize {
         self.line(row).chars().count()
+    }
+
+    // ---- bracket matching ----
+
+    /// Char positions (char index) that are inside a string or comment token on
+    /// `row`, so bracket matching can ignore brackets that are really text.
+    fn skip_mask(&self, row: usize) -> Vec<bool> {
+        let line = self.line(row);
+        let n = line.chars().count();
+        let mut mask = vec![false; n];
+        let in_block = self.line_states.get(row).copied().unwrap_or(false);
+        for (s, e, tok) in syntax::scan_line(self.language, line, in_block).0 {
+            if matches!(tok, syntax::Tok::String | syntax::Tok::Comment) {
+                for slot in mask.iter_mut().take(e.min(n)).skip(s.min(n)) {
+                    *slot = true;
+                }
+            }
+        }
+        mask
+    }
+
+    /// The bracket pair `()`, `[]` or `{}` that encloses the cursor, ignoring
+    /// brackets inside strings and comments. Returns the opener/closer positions
+    /// so the UI can highlight them and draw a guide between them. Bounded work:
+    /// gives up after scanning `MAX_BRACKET_SCAN` characters in either direction.
+    pub fn enclosing_brackets(&self) -> Option<BracketPair> {
+        let (crow, ccol) = self.cursor;
+
+        // Walk backward from just left of the cursor for the nearest opener that
+        // isn't already closed before the cursor (one pending counter per type).
+        let mut pending = [0i32; 3];
+        let mut steps = 0usize;
+        let (mut open_pos, mut open_kind) = (None, 0usize);
+        let mut r = crow as isize;
+        'back: while r >= 0 {
+            let row = r as usize;
+            let chars: Vec<char> = self.line(row).chars().collect();
+            let mask = self.skip_mask(row);
+            let upper = if row == crow { ccol.min(chars.len()) } else { chars.len() };
+            let mut c = upper as isize - 1;
+            while c >= 0 {
+                steps += 1;
+                if steps > MAX_BRACKET_SCAN {
+                    return None;
+                }
+                let ci = c as usize;
+                if !mask.get(ci).copied().unwrap_or(false) {
+                    if let Some((k, is_open)) = bracket_kind(chars[ci]) {
+                        if is_open {
+                            if pending[k] > 0 {
+                                pending[k] -= 1;
+                            } else {
+                                open_pos = Some((row, ci));
+                                open_kind = k;
+                                break 'back;
+                            }
+                        } else {
+                            pending[k] += 1;
+                        }
+                    }
+                }
+                c -= 1;
+            }
+            r -= 1;
+        }
+        let (or, oc) = open_pos?;
+
+        // Walk forward from the opener for its matching closer (depth on this
+        // bracket type only).
+        let mut depth = 0i32;
+        steps = 0;
+        for row in or..self.lines.len() {
+            let chars: Vec<char> = self.line(row).chars().collect();
+            let mask = self.skip_mask(row);
+            let lo = if row == or { oc } else { 0 };
+            for (ci, &ch) in chars.iter().enumerate().skip(lo) {
+                steps += 1;
+                if steps > MAX_BRACKET_SCAN {
+                    return None;
+                }
+                if mask.get(ci).copied().unwrap_or(false) {
+                    continue;
+                }
+                if let Some((k, is_open)) = bracket_kind(ch) {
+                    if k != open_kind {
+                        continue;
+                    }
+                    if is_open {
+                        depth += 1;
+                    } else {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(BracketPair { open: (or, oc), close: (row, ci) });
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     // ---- highlight state (block comments) ----
@@ -1044,6 +1168,53 @@ mod bench {
         // hundreds of µs to milliseconds; incremental must stay tiny.
         assert!(per_insert < 50.0, "insert_char too slow: {per_insert} µs");
         assert!(per_undo < 50.0, "undo too slow: {per_undo} µs");
+    }
+}
+
+#[cfg(test)]
+mod bracket_tests {
+    use super::*;
+
+    fn buf(lines: &[&str], lang: Language) -> Buffer {
+        let mut b = Buffer::untitled();
+        b.language = lang;
+        b.lines = lines.iter().map(|s| s.to_string()).collect();
+        b.recompute_states();
+        b
+    }
+
+    #[test]
+    fn matches_across_lines() {
+        let mut b = buf(&["fn f() {", "    body();", "}"], Language::Rust);
+        b.goto(1, 4); // inside the block
+        let p = b.enclosing_brackets().expect("should find {}");
+        assert_eq!(p.open, (0, 7));
+        assert_eq!(p.close, (2, 0));
+    }
+
+    #[test]
+    fn picks_innermost_pair() {
+        let mut b = buf(&["a(b[c] )"], Language::Rust);
+        b.goto(0, 5); // between [ and ] region: cursor after c
+        let p = b.enclosing_brackets().expect("innermost is []");
+        assert_eq!((p.open, p.close), ((0, 3), (0, 5)));
+    }
+
+    #[test]
+    fn ignores_brackets_in_strings_and_comments() {
+        // The only real pair is the outer (); the "(" in the string and the
+        // "]" in the comment must be ignored.
+        let mut b = buf(&["f(\"a ( b\"); // ]", "x"], Language::Rust);
+        b.goto(0, 5);
+        let p = b.enclosing_brackets().expect("outer ()");
+        assert_eq!((p.open, p.close), ((0, 1), (0, 9)));
+    }
+
+    #[test]
+    fn none_when_unbalanced() {
+        let mut b = buf(&["let x = 1;"], Language::Rust);
+        b.goto(0, 4);
+        assert!(b.enclosing_brackets().is_none());
     }
 }
 
