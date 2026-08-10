@@ -1,7 +1,6 @@
-//! Config file — `%APPDATA%\plume\config.toml` on Windows, else
-//! `$XDG_CONFIG_HOME/plume/config.toml` (or `~/.config/plume/config.toml`) on
-//! Unix. A tiny hand-parsed TOML-ish subset — no external dependency. Holds the
-//! default keymap, an optional theme, and per-action keybinding overrides.
+//! Config file parsing and persistence — a tiny hand-parsed TOML-ish subset
+//! with no external dependency. Holds the default keymap, an optional theme,
+//! and per-action keybinding overrides. Its location is resolved by `paths`.
 
 use std::fs;
 

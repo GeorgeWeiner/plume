@@ -27,6 +27,26 @@ cargo build --release
 ./target/release/plume
 ```
 
+### Windows
+
+`cargo install` above already puts `plume` on your PATH. For the full Windows
+setup on top of that — a Start-menu and desktop shortcut plus **Open in plume**
+/ **Edit with plume** in the Explorer right-click menu — run the bundled
+installer from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\install.ps1
+```
+
+It installs the binary with `cargo install` (reusing the copy already on your
+PATH if you have one), then adds the shortcuts and context menus. Launches
+prefer Windows Terminal and fall back to the classic console, with no flashing
+window. Everything is per-user, so there is no admin prompt. Skip pieces with
+`-NoShortcuts` or `-NoContextMenu`, or force a rebuild with `-Reinstall`.
+
+Undo it all with `windows\uninstall.ps1` (add `-Purge` to also delete your
+config and saved sessions).
+
 ## Usage
 
 ```sh
